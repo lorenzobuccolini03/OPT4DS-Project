@@ -1,0 +1,8 @@
+{
+  "suite": "quick",
+  "seed": 7,
+  "tol": 1e-06,
+  "max_iter": 8000,
+  "record_every": 5,
+  "notes": "LDLT, Heavy Ball, and Nesterov are scratch implementations. NumPy solve is used only as an off-the-shelf correctness check."
+}
