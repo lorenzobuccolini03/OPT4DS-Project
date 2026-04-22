@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ELM Optimization Project Code
 
 This repository contains executable Python code for Project 8, "Three Algorithms to solve the ELM Problem".
@@ -77,3 +78,7 @@ The experiments follow the professor's guidelines:
   relative error to the direct solution, and scaling with problem size;
 - different regularization values are reported as different mathematical problems, not mixed as if they were the same
   optimization instance.
+=======
+# Optimization-for-Data-Science---The-ELM-Problem
+Implementation and Experiments of some Optimization Algorithms (LDLT Factorization + Heavy Ball + Accelerated Gradient) to solve the ELM problem
+>>>>>>> 054dd30c28cce04711849a12991bb650eecf5d25
