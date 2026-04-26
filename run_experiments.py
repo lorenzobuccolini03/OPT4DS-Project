@@ -6,25 +6,25 @@ which is essential for the course requirement that algorithmic performance
 must not be mixed with model hyperparameter tuning.
 """
 
-from __future__ import annotations
+from __future__ import annotations # for Python 3.10+ type annotations
 
-import argparse
+import argparse # for command-line argument parsing
 import csv
 import json
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable # for type annotations of iterables
 
-import numpy as np
+import numpy as np # for numerical computations
 
 # Keep matplotlib from writing its cache into the user home directory.
 os.environ.setdefault(
     "MPLCONFIGDIR",
     str(Path(os.getenv("TMPDIR", "/tmp")) / "elm_optimization_matplotlib_cache"),
-)
+) # for reproducibility and to avoid cluttering the user's home directory
 import matplotlib
 
-matplotlib.use("Agg")
+matplotlib.use("Agg") # for headless environments (no display)
 import matplotlib.pyplot as plt
 
 from elm_optimization.algorithms import (

@@ -1,7 +1,7 @@
 """Optimization algorithms for regularized Extreme Learning Machines.
 
 The package separates the ELM problem construction from the numerical
-algorithms, as requested in the project guidelines.  The three required
+algorithms. The three required
 methods are implemented in :mod:`elm_optimization.algorithms`.
 """
 

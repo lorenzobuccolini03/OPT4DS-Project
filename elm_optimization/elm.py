@@ -13,7 +13,7 @@ fixed, so the optimization variable is only the output matrix W.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal # for the activation type annotation
 
 import numpy as np
 

@@ -1,8 +1,6 @@
 """Scratch implementations of the three project algorithms.
 
-The professor's guidelines require implementing the numerical algorithms
-directly instead of replacing them by one-line solver calls.  This file
-therefore implements:
+This file implements:
 
 1. LDLT factorization and triangular solves for the direct method.
 2. Heavy Ball with the optimal quadratic parameters from the theory.
@@ -15,45 +13,45 @@ project algorithms.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from time import perf_counter
-from typing import Callable
+from dataclasses import dataclass, field # for convenient data classes to store results and parameters
+from time import perf_counter # for measuring elapsed time of optimization methods
+from typing import Callable # for type annotations of objective functions
 
 import numpy as np
 
-from .metrics import frobenius_norm
+from .metrics import frobenius_norm # for computing the Frobenius norm of gradients and errors
 
-ObjectiveFunction = Callable[[np.ndarray], float]
+ObjectiveFunction = Callable[[np.ndarray], float] # take weights as input and return a scalar value
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True) # for storing spectral parameters needed by the first-order algorithms
 class SpectralBounds:
     """Spectral parameters used by the first-order algorithms."""
 
-    mu: float
-    l_smooth: float
-    condition_estimate: float
-    power_iterations: int
-    raw_largest_eigenvalue_estimate: float
+    mu: float # the strong convexity parameter (lower bound on eigenvalues)
+    l_smooth: float # the Lipschitz constant (upper bound on eigenvalues)
+    condition_estimate: float # the estimated condition number (l_smooth / mu)
+    power_iterations: int # the number of iterations taken by the Power Method to estimate the largest eigenvalue
+    raw_largest_eigenvalue_estimate: float # the raw estimate of the largest eigenvalue from the Power Method before safety inflation
 
 
 @dataclass
 class OptimizationResult:
     """Result returned by an optimization method."""
 
-    method: str
-    weights: np.ndarray
-    iterations: int
-    converged: bool
-    elapsed_seconds: float
-    final_gradient_norm: float
-    alpha: float | None = None
-    beta: float | None = None
-    history: dict[str, list[float]] = field(default_factory=dict)
+    method: str # name of the optimization method used (e.g., "LDLT", "Heavy Ball", "Nesterov")
+    weights: np.ndarray # the final weights found by the optimization method
+    iterations: int # the number of iterations taken by the optimization method (0 for direct methods)
+    converged: bool # whether the optimization method converged within the given tolerance and iteration limit
+    elapsed_seconds: float # the time taken by the optimization method in seconds
+    final_gradient_norm: float # the Frobenius norm of the final gradient at the solution
+    alpha: float | None = None # the step size used by the first-order method (None for direct methods)
+    beta: float | None = None # the momentum parameter used by the first-order method (None for direct methods)
+    history: dict[str, list[float]] = field(default_factory=dict) # a history of optimization metrics recorded during the iterations (empty for direct methods)
 
-
+# (A3) Cholesky-like factorization and solves for the direct method
 def ldlt_factorize(q: np.ndarray, pivot_tol: float = 1e-14) -> tuple[np.ndarray, np.ndarray]:
-    """Compute Q = L diag(d) L.T for a dense SPD matrix.
+    """Compute Q = L diag(d) L.T for a dense Symmetric Positive Definite matrix.
 
     This is the square-root-free factorization described in Algorithm 1 of the
     theoretical report.  The matrix L has unit diagonal, while d stores the
@@ -63,60 +61,60 @@ def ldlt_factorize(q: np.ndarray, pivot_tol: float = 1e-14) -> tuple[np.ndarray,
         L_ij = (q_ij - sum_{k<j} L_ik L_jk d_k) / d_j
 
     A vectorized matrix-vector product is used inside each column to keep the
-    code efficient without delegating the factorization to a library routine.
+    code efficient without delegating the factorization to a library.
     """
 
-    q = np.asarray(q, dtype=float)
+    q = np.asarray(q, dtype=float) # ensure q is a NumPy array of type float
     if q.ndim != 2 or q.shape[0] != q.shape[1]:
         raise ValueError("q must be a square matrix.")
     if not np.allclose(q, q.T, rtol=1e-10, atol=1e-12):
         raise ValueError("q must be symmetric.")
 
-    n = q.shape[0]
-    l_factor = np.eye(n, dtype=float)
-    d = np.zeros(n, dtype=float)
+    n = q.shape[0] # the size of the matrix
+    l_factor = np.eye(n, dtype=float) # initialize L as the identity matrix (unit lower triangular)
+    d = np.zeros(n, dtype=float) # initialize d as a zero vector to store the diagonal entries of D
 
+    # The main loop:
     for j in range(n):
         if j == 0:
             diag_correction = 0.0
-            v = np.empty(0, dtype=float)
+            v = np.empty(0, dtype=float) # empty vector for the first column, since there are no previous columns to consider
         else:
-            # v_k = L_jk d_k, exactly the intermediate vector introduced in
-            # the report to avoid redundant products.
+            # v_k = L_jk * d_k (vector initialized to store the products needed for the diagonal correction and column residual)
             v = l_factor[j, :j] * d[:j]
-            diag_correction = float(l_factor[j, :j] @ v)
+            diag_correction = float(l_factor[j, :j] @ v) # vectorized dot product to compute the diagonal correction for the pivot
 
-        pivot = float(q[j, j] - diag_correction)
+        pivot = float(q[j, j] - diag_correction) # diagonal entry corrected by the contributions from previous columns
         if pivot <= pivot_tol:
             raise np.linalg.LinAlgError(
-                "LDLT pivot is not positive. The matrix is not numerically SPD "
+                "LDLT pivot is not positive. The matrix is not numerically SPD"
                 f"at column {j}: pivot={pivot:.3e}."
             )
-        d[j] = pivot
+        d[j] = pivot 
 
         if j + 1 < n:
             if j == 0:
-                column_residual = q[j + 1 :, j].copy()
+                column_residual = q[j + 1 :, j].copy() # case where v is empty
             else:
-                column_residual = q[j + 1 :, j] - l_factor[j + 1 :, :j] @ v
+                column_residual = q[j + 1 :, j] - l_factor[j + 1 :, :j] @ v # dot product to compute the residual for the current column below the pivot
             l_factor[j + 1 :, j] = column_residual / d[j]
 
     return l_factor, d
 
-
+# 1) Forward substitution to solve L Z = rhs for unit lower triangular L
 def forward_substitution_unit_lower(l_factor: np.ndarray, rhs: np.ndarray) -> np.ndarray:
     """Solve L X = rhs for unit lower triangular L."""
 
-    rhs_2d, was_vector = _as_2d_rhs(rhs)
+    rhs_2d, was_vector = _as_2d_rhs(rhs) # ensure rhs is 2D for consistent indexing, and remember if it was originally a vector
     n = l_factor.shape[0]
     x = np.zeros_like(rhs_2d, dtype=float)
 
+    # The forward substitution loop:
     for i in range(n):
-        x[i, :] = rhs_2d[i, :] - l_factor[i, :i] @ x[:i, :]
-
+        x[i, :] = rhs_2d[i, :] - l_factor[i, :i] @ x[:i, :] # assign the solution for the current row by subtracting the contributions from previous rows
     return x[:, 0] if was_vector else x
 
-
+# 2) Diagonal scaling
 def diagonal_solve(d: np.ndarray, rhs: np.ndarray) -> np.ndarray:
     """Solve diag(d) X = rhs by elementwise division."""
 
@@ -124,7 +122,7 @@ def diagonal_solve(d: np.ndarray, rhs: np.ndarray) -> np.ndarray:
     x = rhs_2d / d[:, None]
     return x[:, 0] if was_vector else x
 
-
+# 3) Backward substitution
 def backward_substitution_unit_upper_from_lower(
     l_factor: np.ndarray, rhs: np.ndarray
 ) -> np.ndarray:
@@ -390,8 +388,10 @@ def nesterov_accelerated_gradient(
         history=history,
     )
 
+# Appendix: Helper functions for the algorithms
 
-def _as_2d_rhs(rhs: np.ndarray) -> tuple[np.ndarray, bool]:
+# 1. Ensure the right-hand side is 2D for consistent indexing, and remember if it was originally a vector
+def _as_2d_rhs(rhs: np.ndarray) -> tuple[np.ndarray, bool]: 
     rhs_array = np.asarray(rhs, dtype=float)
     was_vector = rhs_array.ndim == 1
     if was_vector:
@@ -400,7 +400,7 @@ def _as_2d_rhs(rhs: np.ndarray) -> tuple[np.ndarray, bool]:
         raise ValueError("rhs must be a vector or a matrix.")
     return rhs_array, was_vector
 
-
+# 2. Validate the spectral bounds for the first-order algorithms
 def _validate_spectral_bounds(mu: float, l_smooth: float) -> None:
     if mu <= 0.0:
         raise ValueError("mu must be strictly positive.")
@@ -409,7 +409,7 @@ def _validate_spectral_bounds(mu: float, l_smooth: float) -> None:
     if l_smooth < mu:
         raise ValueError("l_smooth must be greater than or equal to mu.")
 
-
+# 3. Create a new history dictionary for recording optimization metrics
 def _new_history() -> dict[str, list[float]]:
     return {
         "iteration": [],
@@ -418,7 +418,7 @@ def _new_history() -> dict[str, list[float]]:
         "relative_error": [],
     }
 
-
+# 4. Record the current optimization metrics in the history dictionary
 def _record_history(
     history: dict[str, list[float]],
     *,
