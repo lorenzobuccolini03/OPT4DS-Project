@@ -54,7 +54,9 @@ class ELMInstance:
         self.hidden_width = hidden_weights.shape[0]
         self.n_variables_per_output = h_train_aug.shape[0]
 
+# APPENDIX: Helper functions for building the ELM problem.
 
+# 1. This function is used to convert integer labels into a one-hot matrix.
 def one_hot(labels, n_classes):
     """Convert integer labels into a one-hot matrix."""
 
@@ -62,7 +64,7 @@ def one_hot(labels, n_classes):
     encoded[labels, np.arange(labels.size)] = 1.0
     return encoded
 
-
+# 2. This function is used to standardize the data using only training-set statistics.
 def standardize_train_test(x_train, x_test):
     """Standardize the data using only training-set statistics."""
 
@@ -74,7 +76,7 @@ def standardize_train_test(x_train, x_test):
     x_test_scaled = (x_test - mean) / std
     return x_train_scaled, x_test_scaled
 
-
+# 3. This function is used to generate a synthetic classification dataset with Gaussian clusters.
 def generate_gaussian_classification_data(
     n_train,
     n_test,
@@ -115,7 +117,7 @@ def activation_function(z, activation):
 
     raise ValueError("Unsupported activation: " + str(activation))
 
-
+# 4. This function is used to compute the hidden-layer activations for the training and test sets.
 def build_hidden_matrix(x, hidden_weights, hidden_bias, activation):
     """Compute H = sigma(W1 X + b1 1^T)."""
 
@@ -123,7 +125,7 @@ def build_hidden_matrix(x, hidden_weights, hidden_bias, activation):
     h = activation_function(affine_part, activation)
     return h
 
-
+# 5. This function is used to add the final row of ones to the hidden-layer matrix, which allows the output bias to be included in the matrix W.
 def augment_hidden_matrix(h):
     """Add the final row of ones used for the output bias."""
 
@@ -131,7 +133,7 @@ def augment_hidden_matrix(h):
     h_aug = np.vstack([h, ones])
     return h_aug
 
-
+# 6. This function is used to build the matrices Q and C for the optimality equation W Q = C, which is the system solved by all the algorithms.
 def formulate_elm_system(h_aug, y, lambda_reg):
     """Build Q and C for the optimality equation W Q = C.
 
@@ -152,7 +154,7 @@ def formulate_elm_system(h_aug, y, lambda_reg):
     c = (y @ h_aug.T) / n_samples
     return q, c
 
-
+# 7. This function is used to create a reproducible ELM instance with synthetic data, random hidden layer, and the matrices Q and C.
 def create_elm_classification_instance(
     n_train=1000,
     n_test=300,
@@ -213,9 +215,9 @@ def create_elm_classification_instance(
         activation,
     )
 
-
+# 8. This function is used to compute the predicted scores W H, which are needed to evaluate the training and test accuracy.
 def predict_scores(weights, h_aug):
     """Compute predictions W H."""
 
-    scores = weights @ h_aug
+    scores = weights @ h_aug # W_2 * H
     return scores

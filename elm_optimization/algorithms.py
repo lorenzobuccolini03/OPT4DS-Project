@@ -415,7 +415,9 @@ def nesterov_accelerated_gradient(
         history=history,
     )
 
+# Helper functions for the algorithms.
 
+# 1. This function is used to allow the forward/backward/diagonal solves to accept either vectors or matrices as the right-hand side.
 def _as_2d_rhs(rhs):
     """Make a vector look like a matrix with one column."""
 
@@ -430,7 +432,7 @@ def _as_2d_rhs(rhs):
 
     return rhs_array, was_vector
 
-
+# 2. This function is used to check the spectral bounds before running the first-order methods.
 def _validate_spectral_bounds(mu, l_smooth):
     if mu <= 0.0:
         raise ValueError("mu must be strictly positive.")
@@ -439,7 +441,7 @@ def _validate_spectral_bounds(mu, l_smooth):
     if l_smooth < mu:
         raise ValueError("l_smooth must be greater than or equal to mu.")
 
-
+# 3. These functions are used to record the optimization history for plotting and analysis.
 def _new_history():
     history = {
         "iteration": [],
@@ -449,7 +451,7 @@ def _new_history():
     }
     return history
 
-
+# This function is used to record the optimization history for plotting and analysis.
 def _record_history(
     history,
     iteration,
