@@ -2,7 +2,7 @@
   "suite": "quick",
   "seed": 7,
   "tol": 1e-06,
-  "max_iter": 8000,
-  "record_every": 5,
-  "notes": "LDLT, Heavy Ball, and Nesterov are scratch implementations. NumPy solve is used only as an off-the-shelf correctness check."
+  "max_iter": 12000,
+  "record_every": 20,
+  "notes": "LDLT, Heavy Ball, and Nesterov are the hand-written project algorithms. Built-in routines are used only in the benchmark section to validate the numerical results."
 }

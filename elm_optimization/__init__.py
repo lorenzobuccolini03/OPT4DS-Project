@@ -12,8 +12,11 @@ from .algorithms import (
 )
 from .elm import (
     ELMInstance,
+    apply_sparse_feature_mask,
     create_elm_classification_instance,
+    create_elm_instance_from_arrays,
     formulate_elm_system,
+    generate_correlated_classification_data,
     predict_scores,
 )
 from .metrics import (

@@ -101,6 +101,120 @@ def generate_gaussian_classification_data(
     return x_train, train_labels, x_test, test_labels
 
 
+def generate_correlated_classification_data(
+    n_train,
+    n_test,
+    n_features,
+    n_classes,
+    class_sep,
+    noise,
+    correlation_strength,
+    feature_scales,
+    seed,
+):
+    """Generate synthetic data with controlled feature scales and correlation.
+
+    This function is used only to create more interesting ELM test cases.
+    The optimization problem is still the same ELM problem built later from H,
+    Q, and C.
+    """
+
+    rng = np.random.default_rng(seed)
+    rho = min(max(correlation_strength, 0.0), 0.99)
+
+    if feature_scales is None:
+        scales = np.ones(n_features)
+    else:
+        scales = np.asarray(feature_scales, dtype=float)
+        if scales.size != n_features:
+            raise ValueError("feature_scales must have one value per feature.")
+
+    centers = class_sep * rng.normal(size=(n_features, n_classes))
+    centers = centers * scales[:, None]
+
+    train_labels = rng.integers(0, n_classes, size=n_train)
+    test_labels = rng.integers(0, n_classes, size=n_test)
+
+    direction = rng.normal(size=(n_features, 1))
+    direction_norm = np.linalg.norm(direction)
+    if direction_norm == 0.0:
+        direction[0, 0] = 1.0
+    else:
+        direction = direction / direction_norm
+
+    x_train = _sample_correlated_points(
+        rng,
+        centers,
+        train_labels,
+        noise,
+        rho,
+        scales,
+        direction,
+    )
+    x_test = _sample_correlated_points(
+        rng,
+        centers,
+        test_labels,
+        noise,
+        rho,
+        scales,
+        direction,
+    )
+
+    x_train, x_test = standardize_train_test(x_train, x_test)
+    return x_train, train_labels, x_test, test_labels
+
+
+def _sample_correlated_points(
+    rng,
+    centers,
+    labels,
+    noise,
+    rho,
+    scales,
+    direction,
+):
+    """Sample points around class centers with an optional common direction."""
+
+    n_features = centers.shape[0]
+    n_samples = labels.size
+
+    independent_noise = rng.normal(size=(n_features, n_samples))
+    shared_values = rng.normal(size=(1, n_samples))
+    shared_noise = direction @ shared_values
+
+    mixed_noise = np.sqrt(1.0 - rho) * independent_noise
+    mixed_noise = mixed_noise + np.sqrt(rho) * shared_noise
+    mixed_noise = noise * mixed_noise * scales[:, None]
+
+    x = centers[:, labels] + mixed_noise
+    return x
+
+
+def apply_sparse_feature_mask(x_train, x_test, zero_probability, seed):
+    """Set a fixed random part of the feature matrix to zero.
+
+    We keep ordinary dense NumPy arrays. The point of the test is only to see
+    how the algorithms behave when the ELM hidden layer receives less dense
+    information.
+    """
+
+    rng = np.random.default_rng(seed)
+    keep_probability = 1.0 - zero_probability
+
+    train_mask = rng.random(size=x_train.shape) < keep_probability
+    test_mask = rng.random(size=x_test.shape) < keep_probability
+
+    sparse_x_train = x_train * train_mask
+    sparse_x_test = x_test * test_mask
+    sparse_x_train, sparse_x_test = standardize_train_test(
+        sparse_x_train,
+        sparse_x_test,
+    )
+
+    return sparse_x_train, sparse_x_test
+
+
 def activation_function(z, activation):
     """Apply the chosen hidden-layer activation function."""
 
@@ -179,6 +293,39 @@ def create_elm_classification_instance(
     )
     x_train, train_labels, x_test, test_labels = data
 
+    return create_elm_instance_from_arrays(
+        x_train,
+        train_labels,
+        x_test,
+        test_labels,
+        hidden_width=hidden_width,
+        lambda_reg=lambda_reg,
+        activation=activation,
+        hidden_scale=hidden_scale,
+        seed=seed,
+        standardize_data=False,
+    )
+
+
+def create_elm_instance_from_arrays(
+    x_train,
+    train_labels,
+    x_test,
+    test_labels,
+    hidden_width=100,
+    lambda_reg=1e-3,
+    activation="tanh",
+    hidden_scale=1.0,
+    seed=0,
+    standardize_data=True,
+):
+    """Build the fixed ELM optimization problem from given data arrays."""
+
+    if standardize_data:
+        x_train, x_test = standardize_train_test(x_train, x_test)
+
+    n_features = x_train.shape[0]
+    n_classes = int(max(np.max(train_labels), np.max(test_labels))) + 1
     y_train = one_hot(train_labels, n_classes)
     y_test = one_hot(test_labels, n_classes)
 
