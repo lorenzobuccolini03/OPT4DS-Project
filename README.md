@@ -1,84 +1,63 @@
-<<<<<<< HEAD
-# ELM Optimization Project Code
+# Optimization for Data Science - The ELM Problem
 
-This repository contains executable Python code for Project 8, "Three Algorithms to solve the ELM Problem".
-It implements the regularized Extreme Learning Machine training problem from the theoretical report and runs
-numerical experiments that compare the required optimization algorithms.
+This folder contains the code for Project 8, "Three Algorithms to solve the ELM Problem".
 
-## Implemented Algorithms
+The code trains a regularized Extreme Learning Machine by solving the quadratic problem
 
-- `LDLT`: square-root-free direct factorization of the symmetric positive definite matrix `Q`.
-- `Heavy Ball`: Polyak momentum method with the optimal strongly convex quadratic parameters.
-- `Nesterov`: strongly-convex accelerated gradient with constant step size and look-ahead gradient.
+```text
+min_W 1/(2N) ||W H - Y||_F^2 + lambda/2 ||W||_F^2
+```
 
-The algorithms are implemented directly in `elm_optimization/algorithms.py`. NumPy is used for array arithmetic,
-but the project algorithms do not call `np.linalg.solve`, Cholesky, SciPy optimizers, or any built-in optimization
-solver. The only built-in linear solve appears as an explicitly labeled correctness reference in the experiment runner
-and smoke test.
+where the hidden layer is generated once and then kept fixed.
 
-## Project Structure
+## Algorithms
 
-- `elm_optimization/elm.py`: data generation, hidden-layer construction, augmented ELM formulation, and `Q, C` construction.
-- `elm_optimization/algorithms.py`: scratch LDLT, triangular solves, power method, Heavy Ball, and Nesterov.
-- `elm_optimization/metrics.py`: objective value, gradient, relative error, MSE, and accuracy.
-- `run_experiments.py`: reproducible experiment runner that writes CSV files and plots.
-- `tests/smoke_test.py`: small executable validation test.
-- `requirements.txt`: minimal Python dependencies.
+- `LDLT`: direct square-root-free factorization.
+- `Heavy Ball`: momentum method for strongly convex quadratic functions.
+- `Nesterov`: accelerated gradient with the gradient evaluated at the look-ahead point.
 
-## Setup
+The three project algorithms are written directly in Python/NumPy. The code does not use
+`np.linalg.cholesky`, `np.linalg.solve`, `scipy.optimize`, or other built-in solvers for the actual project
+methods. A NumPy solve is included only as a separate correctness check.
 
-Use Python 3.10 or newer.
+## Files
+
+- `elm_optimization/elm.py`: creates the synthetic data, hidden layer, augmented matrix `H`, and matrices `Q` and `C`.
+- `elm_optimization/algorithms.py`: contains LDLT, triangular solves, Power Method, Heavy Ball, and Nesterov.
+- `elm_optimization/metrics.py`: objective value, gradient norm, relative error, MSE, and accuracy.
+- `run_experiments.py`: runs the numerical experiments and writes CSV files and plots.
+- `tests/smoke_test.py`: small check that the algorithms still work.
+
+## Run a Small Check
+
+Install the required packages if needed:
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-The current machine already has the required packages installed, so the command may not be necessary.
-
-## Quick Validation
-
 ```bash
 python3 tests/smoke_test.py
 ```
 
-This verifies that the scratch LDLT solver matches NumPy's linear solve on a small instance, then checks that
-Heavy Ball and Nesterov converge to the LDLT solution.
-
 ## Run Experiments
 
-Quick suite:
+Quick version:
 
 ```bash
 python3 run_experiments.py --suite quick
 ```
 
-Full suite for report-quality tables:
+Larger version:
 
 ```bash
 python3 run_experiments.py --suite full --tol 1e-6
 ```
 
-Outputs are written to `results/`:
+The output is written to `results/`:
 
-- `summary.csv`: one row per algorithm and instance, including time, iterations, gradient norm, objective gap,
-  relative error to LDLT, train/test MSE, and train/test accuracy.
-- `convergence_history.csv`: per-iteration history for Heavy Ball and Nesterov.
-- `figures/convergence_validation.png`: log-scale gradient norm and objective gap curves.
-- `figures/conditioning_iterations.png`: iteration counts as `lambda` changes.
-- `figures/scaling_runtime.png`: runtime as hidden width grows.
-
-## Experiment Design
-
-The experiments follow the professor's guidelines:
-
-- every algorithm is implemented in source files rather than a single notebook or one-line library call;
-- all algorithms solve the exact same fixed ELM problem within each instance;
-- synthetic data are generated on the fly with controlled size and reproducible seeds;
-- the report-relevant metrics focus on optimization behavior: objective gap, gradient norm, time, iterations,
-  relative error to the direct solution, and scaling with problem size;
-- different regularization values are reported as different mathematical problems, not mixed as if they were the same
-  optimization instance.
-=======
-# Optimization-for-Data-Science---The-ELM-Problem
-Implementation and Experiments of some Optimization Algorithms (LDLT Factorization + Heavy Ball + Accelerated Gradient) to solve the ELM problem
->>>>>>> 054dd30c28cce04711849a12991bb650eecf5d25
+- `summary.csv`: one row per algorithm and instance.
+- `convergence_history.csv`: gradient norms and gaps during the iterative methods.
+- `figures/convergence_validation.png`: convergence curves.
+- `figures/conditioning_iterations.png`: effect of changing `lambda`.
+- `figures/scaling_runtime.png`: runtime as the hidden width changes.

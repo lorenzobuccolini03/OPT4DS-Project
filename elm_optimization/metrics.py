@@ -1,54 +1,52 @@
-"""Metrics and objective evaluations for the ELM experiments."""
-
-from __future__ import annotations
+"""Metric functions for the ELM experiments."""
 
 import numpy as np
 
 
-def objective_value(
-    weights: np.ndarray,
-    h_aug: np.ndarray,
-    y: np.ndarray,
-    lambda_reg: float,
-) -> float:
-    """Evaluate the regularized ELM objective from the theory."""
+def objective_value(weights, h_aug, y, lambda_reg):
+    """Compute the regularized ELM objective."""
 
     residual = weights @ h_aug - y
     n_samples = h_aug.shape[1]
+
     loss = 0.5 * np.sum(residual * residual) / n_samples
     penalty = 0.5 * lambda_reg * np.sum(weights * weights)
-    return float(loss + penalty)
+    value = loss + penalty
+
+    return float(value)
 
 
-def gradient(weights: np.ndarray, q: np.ndarray, c: np.ndarray) -> np.ndarray:
-    """Evaluate grad f(W) = W Q - C."""
+def gradient(weights, q, c):
+    """Compute grad f(W) = W Q - C."""
 
     return weights @ q - c
 
 
-def frobenius_norm(matrix: np.ndarray) -> float:
-    """Compute the Frobenius norm explicitly."""
+def frobenius_norm(matrix):
+    """Compute the Frobenius norm."""
 
-    return float(np.sqrt(np.sum(matrix * matrix)))
+    squared_norm = np.sum(matrix * matrix)
+    return float(np.sqrt(squared_norm))
 
 
-def relative_error(candidate: np.ndarray, reference: np.ndarray) -> float:
-    """Return ||candidate-reference||_F / max(1, ||reference||_F)."""
+def relative_error(candidate, reference):
+    """Compute relative Frobenius error."""
 
     numerator = frobenius_norm(candidate - reference)
     denominator = max(1.0, frobenius_norm(reference))
     return numerator / denominator
 
 
-def mean_squared_error(scores: np.ndarray, y: np.ndarray) -> float:
-    """Mean squared prediction error over all output entries."""
+def mean_squared_error(scores, y):
+    """Mean squared prediction error."""
 
     residual = scores - y
     return float(np.mean(residual * residual))
 
 
-def classification_accuracy(scores: np.ndarray, labels: np.ndarray) -> float:
-    """Classification accuracy for one-hot style targets."""
+def classification_accuracy(scores, labels):
+    """Classification accuracy for one-hot targets."""
 
-    predicted = np.argmax(scores, axis=0)
-    return float(np.mean(predicted == labels))
+    predicted_labels = np.argmax(scores, axis=0)
+    accuracy = np.mean(predicted_labels == labels)
+    return float(accuracy)

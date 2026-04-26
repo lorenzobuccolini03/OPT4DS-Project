@@ -1,6 +1,4 @@
-"""Small executable smoke test for the ELM optimization package."""
-
-from __future__ import annotations
+"""Small smoke test for the ELM optimization package."""
 
 import sys
 from pathlib import Path
@@ -21,7 +19,7 @@ from elm_optimization.elm import create_elm_classification_instance
 from elm_optimization.metrics import objective_value, relative_error
 
 
-def main() -> None:
+def main():
     instance = create_elm_classification_instance(
         n_train=120,
         n_test=40,
@@ -33,14 +31,22 @@ def main() -> None:
     )
 
     ldlt = ldlt_solve_weights(instance.q, instance.c)
+
+    # This library solve is only a check for the scratch LDLT implementation.
     numpy_reference = np.linalg.solve(instance.q, instance.c.T).T
     assert relative_error(ldlt.weights, numpy_reference) < 1e-9
     assert ldlt.final_gradient_norm < 1e-9
 
     spectral = estimate_spectral_bounds(instance.q, instance.lambda_reg, seed=123)
-    objective_fn = lambda w: objective_value(
-        w, instance.h_train_aug, instance.y_train, instance.lambda_reg
-    )
+
+    def objective_fn(weights):
+        return objective_value(
+            weights,
+            instance.h_train_aug,
+            instance.y_train,
+            instance.lambda_reg,
+        )
+
     w0 = np.zeros_like(instance.c)
 
     hb = heavy_ball(
@@ -54,6 +60,7 @@ def main() -> None:
         objective_fn=objective_fn,
         reference_weights=ldlt.weights,
     )
+
     nag = nesterov_accelerated_gradient(
         instance.q,
         instance.c,
@@ -66,15 +73,15 @@ def main() -> None:
         reference_weights=ldlt.weights,
     )
 
-    assert hb.converged, f"Heavy Ball did not converge: {hb.final_gradient_norm}"
-    assert nag.converged, f"Nesterov did not converge: {nag.final_gradient_norm}"
+    assert hb.converged, "Heavy Ball did not converge."
+    assert nag.converged, "Nesterov did not converge."
     assert relative_error(hb.weights, ldlt.weights) < 1e-3
     assert relative_error(nag.weights, ldlt.weights) < 1e-3
 
     print("Smoke test passed.")
-    print(f"LDLT grad norm: {ldlt.final_gradient_norm:.3e}")
-    print(f"Heavy Ball iterations: {hb.iterations}")
-    print(f"Nesterov iterations: {nag.iterations}")
+    print("LDLT grad norm: " + format(ldlt.final_gradient_norm, ".3e"))
+    print("Heavy Ball iterations: " + str(hb.iterations))
+    print("Nesterov iterations: " + str(nag.iterations))
 
 
 if __name__ == "__main__":

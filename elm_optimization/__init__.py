@@ -1,9 +1,4 @@
-"""Optimization algorithms for regularized Extreme Learning Machines.
-
-The package separates the ELM problem construction from the numerical
-algorithms. The three required
-methods are implemented in :mod:`elm_optimization.algorithms`.
-"""
+"""Helper imports for the ELM optimization project."""
 
 from .algorithms import (
     OptimizationResult,
@@ -28,23 +23,3 @@ from .metrics import (
     objective_value,
     relative_error,
 )
-
-__all__ = [
-    "ELMInstance",
-    "OptimizationResult",
-    "SpectralBounds",
-    "classification_accuracy",
-    "create_elm_classification_instance",
-    "estimate_spectral_bounds",
-    "formulate_elm_system",
-    "gradient",
-    "heavy_ball",
-    "ldlt_factorize",
-    "ldlt_solve_weights",
-    "mean_squared_error",
-    "nesterov_accelerated_gradient",
-    "objective_value",
-    "power_method_largest_eigenvalue",
-    "predict_scores",
-    "relative_error",
-]

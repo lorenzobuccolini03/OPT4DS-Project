@@ -1,30 +1,31 @@
 """Run the ELM optimization experiments.
 
-The script produces reproducible CSV files and plots under ``results/`` by
-default.  Each row compares algorithms on the same fixed mathematical problem,
-which is essential for the course requirement that algorithmic performance
-must not be mixed with model hyperparameter tuning.
+The script creates synthetic ELM problems, solves each one with the required
+algorithms, and saves tables and plots in the results folder.
 """
 
-from __future__ import annotations # for Python 3.10+ type annotations
-
-import argparse # for command-line argument parsing
+import argparse
 import csv
 import json
 import os
 from pathlib import Path
-from typing import Iterable # for type annotations of iterables
+from time import perf_counter
 
-import numpy as np # for numerical computations
+import numpy as np
 
-# Keep matplotlib from writing its cache into the user home directory.
+# Matplotlib and Fontconfig create cache files. This keeps them outside the
+# project folder and avoids warnings on machines where the home cache is locked.
+os.environ.setdefault(
+    "XDG_CACHE_HOME",
+    str(Path(os.getenv("TMPDIR", "/tmp")) / "elm_optimization_cache"),
+)
 os.environ.setdefault(
     "MPLCONFIGDIR",
     str(Path(os.getenv("TMPDIR", "/tmp")) / "elm_optimization_matplotlib_cache"),
-) # for reproducibility and to avoid cluttering the user's home directory
+)
 import matplotlib
 
-matplotlib.use("Agg") # for headless environments (no display)
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from elm_optimization.algorithms import (
@@ -34,7 +35,7 @@ from elm_optimization.algorithms import (
     ldlt_solve_weights,
     nesterov_accelerated_gradient,
 )
-from elm_optimization.elm import ELMInstance, create_elm_classification_instance
+from elm_optimization.elm import create_elm_classification_instance
 from elm_optimization.metrics import (
     classification_accuracy,
     gradient,
@@ -88,48 +89,46 @@ HISTORY_FIELDS = [
 ]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
         choices=["quick", "full"],
         default="quick",
-        help="quick runs in seconds; full uses larger instances for the report.",
+        help="quick runs fast; full uses larger instances.",
     )
-    parser.add_argument("--output-dir", default="results", help="Directory for CSVs/plots.")
-    parser.add_argument("--seed", type=int, default=7, help="Base random seed.")
-    parser.add_argument("--tol", type=float, default=1e-6, help="Absolute gradient tolerance.")
-    parser.add_argument("--max-iter", type=int, default=None, help="Override max iterations.")
-    parser.add_argument(
-        "--record-every",
-        type=int,
-        default=5,
-        help="Record one convergence-history point every k iterations.",
-    )
+    parser.add_argument("--output-dir", default="results")
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--tol", type=float, default=1e-6)
+    parser.add_argument("--max-iter", type=int, default=None)
+    parser.add_argument("--record-every", type=int, default=5)
     return parser.parse_args()
 
 
-def main() -> None:
+def main():
     args = parse_args()
+
     output_dir = Path(args.output_dir)
     figures_dir = output_dir / "figures"
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    config = suite_config(args.suite, args.max_iter)
-    summary_rows: list[dict[str, object]] = []
-    history_rows: list[dict[str, object]] = []
+    max_iter = choose_max_iter(args.suite, args.max_iter)
+    summary_rows = []
+    history_rows = []
 
-    for scenario, instance_id, instance in build_instances(args.suite, args.seed):
-        print(f"Running {scenario}/{instance_id} ...", flush=True)
+    instances = build_instances(args.suite, args.seed)
+    for scenario, instance_id, instance in instances:
+        print("Running " + scenario + "/" + instance_id + " ...", flush=True)
+
         suite_summary, suite_history = run_algorithm_suite(
-            scenario=scenario,
-            instance_id=instance_id,
-            instance=instance,
-            tol=args.tol,
-            max_iter=config["max_iter"],
-            record_every=args.record_every,
-            seed=args.seed,
+            scenario,
+            instance_id,
+            instance,
+            args.tol,
+            max_iter,
+            args.record_every,
+            args.seed,
         )
         summary_rows.extend(suite_summary)
         history_rows.extend(suite_history)
@@ -147,97 +146,108 @@ def main() -> None:
         "suite": args.suite,
         "seed": args.seed,
         "tol": args.tol,
-        "max_iter": config["max_iter"],
+        "max_iter": max_iter,
         "record_every": args.record_every,
         "notes": (
             "LDLT, Heavy Ball, and Nesterov are scratch implementations. "
-            "NumPy solve is used only as an off-the-shelf correctness check."
+            "NumPy solve is used only as a correctness check."
         ),
     }
-    (output_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2))
+    metadata_path = output_dir / "run_metadata.json"
+    metadata_path.write_text(json.dumps(metadata, indent=2))
 
-    print(f"\nWrote {summary_path}")
-    print(f"Wrote {history_path}")
-    print(f"Wrote plots to {figures_dir}")
+    print("")
+    print("Wrote " + str(summary_path))
+    print("Wrote " + str(history_path))
+    print("Wrote plots to " + str(figures_dir))
 
 
-def suite_config(suite: str, max_iter_override: int | None) -> dict[str, int]:
+def choose_max_iter(suite, max_iter_override):
     if max_iter_override is not None:
-        return {"max_iter": max_iter_override}
+        return max_iter_override
     if suite == "full":
-        return {"max_iter": 20_000}
-    return {"max_iter": 8_000}
+        return 20000
+    return 8000
 
 
-def build_instances(
-    suite: str, seed: int
-) -> Iterable[tuple[str, str, ELMInstance]]:
-    """Yield reproducible ELM instances for validation and experiments."""
+def build_instances(suite, seed):
+    """Create the list of ELM problems used in the experiments."""
+
+    instances = []
 
     if suite == "full":
-        validation = dict(n_train=1200, n_test=400, n_features=30, hidden_width=160)
+        validation_n_train = 1200
+        validation_n_test = 400
+        validation_n_features = 30
+        validation_hidden_width = 160
         conditioning_lambdas = [1e-1, 1e-2, 1e-3, 1e-4]
         scaling_widths = [60, 120, 240, 360]
-        scaling = dict(n_train=1800, n_test=600, n_features=35)
+        scaling_n_train = 1800
+        scaling_n_test = 600
+        scaling_n_features = 35
     else:
-        validation = dict(n_train=600, n_test=200, n_features=20, hidden_width=80)
+        validation_n_train = 600
+        validation_n_test = 200
+        validation_n_features = 20
+        validation_hidden_width = 80
         conditioning_lambdas = [1e-1, 1e-2, 1e-3]
         scaling_widths = [40, 80, 120]
-        scaling = dict(n_train=800, n_test=250, n_features=25)
+        scaling_n_train = 800
+        scaling_n_test = 250
+        scaling_n_features = 25
 
-    yield (
-        "validation",
-        "validation_main",
-        create_elm_classification_instance(
-            **validation,
-            n_classes=3,
-            lambda_reg=1e-3,
-            activation="tanh",
-            seed=seed,
-        ),
+    validation_instance = create_elm_classification_instance(
+        n_train=validation_n_train,
+        n_test=validation_n_test,
+        n_features=validation_n_features,
+        n_classes=3,
+        hidden_width=validation_hidden_width,
+        lambda_reg=1e-3,
+        activation="tanh",
+        seed=seed,
     )
+    instances.append(("validation", "validation_main", validation_instance))
 
     for lambda_reg in conditioning_lambdas:
-        yield (
-            "conditioning",
-            f"lambda_{lambda_reg:.0e}",
-            create_elm_classification_instance(
-                n_train=validation["n_train"],
-                n_test=validation["n_test"],
-                n_features=validation["n_features"],
-                n_classes=3,
-                hidden_width=validation["hidden_width"],
-                lambda_reg=lambda_reg,
-                activation="tanh",
-                seed=seed + 1,
-            ),
+        instance = create_elm_classification_instance(
+            n_train=validation_n_train,
+            n_test=validation_n_test,
+            n_features=validation_n_features,
+            n_classes=3,
+            hidden_width=validation_hidden_width,
+            lambda_reg=lambda_reg,
+            activation="tanh",
+            seed=seed + 1,
         )
+        instance_id = "lambda_" + format(lambda_reg, ".0e")
+        instances.append(("conditioning", instance_id, instance))
 
-    for width in scaling_widths:
-        yield (
-            "scaling",
-            f"hidden_{width}",
-            create_elm_classification_instance(
-                **scaling,
-                n_classes=3,
-                hidden_width=width,
-                lambda_reg=1e-3,
-                activation="tanh",
-                seed=seed + 2,
-            ),
+    for hidden_width in scaling_widths:
+        instance = create_elm_classification_instance(
+            n_train=scaling_n_train,
+            n_test=scaling_n_test,
+            n_features=scaling_n_features,
+            n_classes=3,
+            hidden_width=hidden_width,
+            lambda_reg=1e-3,
+            activation="tanh",
+            seed=seed + 2,
         )
+        instance_id = "hidden_" + str(hidden_width)
+        instances.append(("scaling", instance_id, instance))
+
+    return instances
 
 
 def run_algorithm_suite(
-    *,
-    scenario: str,
-    instance_id: str,
-    instance: ELMInstance,
-    tol: float,
-    max_iter: int,
-    record_every: int,
-    seed: int,
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    scenario,
+    instance_id,
+    instance,
+    tol,
+    max_iter,
+    record_every,
+    seed,
+):
     q = instance.q
     c = instance.c
 
@@ -248,15 +258,21 @@ def run_algorithm_suite(
         l_safety_factor=1.01,
     )
 
-    objective_fn = lambda w: objective_value(
-        w, instance.h_train_aug, instance.y_train, instance.lambda_reg
-    )
+    def objective_fn(weights):
+        return objective_value(
+            weights,
+            instance.h_train_aug,
+            instance.y_train,
+            instance.lambda_reg,
+        )
 
+    # LDLT gives the reference optimum for this fixed problem.
     ldlt_result = ldlt_solve_weights(q, c)
     w_star = ldlt_result.weights
     f_star = objective_fn(w_star)
 
     w0 = np.zeros_like(c)
+
     hb_result = heavy_ball(
         q,
         c,
@@ -269,6 +285,7 @@ def run_algorithm_suite(
         reference_weights=w_star,
         record_every=record_every,
     )
+
     nag_result = nesterov_accelerated_gradient(
         q,
         c,
@@ -282,48 +299,43 @@ def run_algorithm_suite(
         record_every=record_every,
     )
 
-    # Off-the-shelf solve is not one of the project algorithms. It is included
-    # only as an external correctness check, as recommended by the guidelines.
+    # This is only a correctness check. It is not one of the project algorithms.
     numpy_reference = numpy_solve_reference(q, c)
 
     results = [ldlt_result, hb_result, nag_result, numpy_reference]
-    summary = [
-        summarize_result(
-            scenario=scenario,
-            instance_id=instance_id,
-            instance=instance,
-            result=result,
-            spectral=spectral,
-            w_star=w_star,
-            f_star=f_star,
-            objective_fn=objective_fn,
+
+    summary = []
+    for result in results:
+        row = summarize_result(
+            scenario,
+            instance_id,
+            instance,
+            result,
+            spectral,
+            w_star,
+            f_star,
+            objective_fn,
         )
-        for result in results
-    ]
+        summary.append(row)
 
     history = []
     for result in [hb_result, nag_result]:
-        history.extend(
-            history_rows_for_result(
-                scenario=scenario,
-                instance_id=instance_id,
-                result=result,
-                f_star=f_star,
-            )
-        )
+        rows = history_rows_for_result(scenario, instance_id, result, f_star)
+        history.extend(rows)
 
     return summary, history
 
 
-def numpy_solve_reference(q: np.ndarray, c: np.ndarray) -> OptimizationResult:
-    """Optional library baseline used only for validation."""
-
-    from time import perf_counter
+def numpy_solve_reference(q, c):
+    """Library reference used only to check the scratch implementation."""
 
     start = perf_counter()
     weights = np.linalg.solve(q, c.T).T
     elapsed = perf_counter() - start
-    grad_norm = float(np.sqrt(np.sum((weights @ q - c) ** 2)))
+
+    grad = weights @ q - c
+    grad_norm = float(np.sqrt(np.sum(grad * grad)))
+
     return OptimizationResult(
         method="NumPy solve reference",
         weights=weights,
@@ -335,22 +347,23 @@ def numpy_solve_reference(q: np.ndarray, c: np.ndarray) -> OptimizationResult:
 
 
 def summarize_result(
-    *,
-    scenario: str,
-    instance_id: str,
-    instance: ELMInstance,
-    result: OptimizationResult,
+    scenario,
+    instance_id,
+    instance,
+    result,
     spectral,
-    w_star: np.ndarray,
-    f_star: float,
+    w_star,
+    f_star,
     objective_fn,
-) -> dict[str, object]:
+):
     train_scores = result.weights @ instance.h_train_aug
     test_scores = result.weights @ instance.h_test_aug
     objective = objective_fn(result.weights)
-    grad_norm = float(np.sqrt(np.sum(gradient(result.weights, instance.q, instance.c) ** 2)))
 
-    return {
+    grad = gradient(result.weights, instance.q, instance.c)
+    grad_norm = float(np.sqrt(np.sum(grad * grad)))
+
+    row = {
         "scenario": scenario,
         "instance_id": instance_id,
         "method": result.method,
@@ -382,59 +395,66 @@ def summarize_result(
         "beta": "" if result.beta is None else result.beta,
     }
 
+    return row
 
-def history_rows_for_result(
-    *,
-    scenario: str,
-    instance_id: str,
-    result: OptimizationResult,
-    f_star: float,
-) -> list[dict[str, object]]:
+
+def history_rows_for_result(scenario, instance_id, result, f_star):
     rows = []
-    for iteration, grad_norm, objective, rel_error in zip(
-        result.history["iteration"],
-        result.history["grad_norm"],
-        result.history["objective"],
-        result.history["relative_error"],
-        strict=True,
-    ):
-        rows.append(
-            {
-                "scenario": scenario,
-                "instance_id": instance_id,
-                "method": result.method,
-                "iteration": int(iteration),
-                "grad_norm": grad_norm,
-                "objective": objective,
-                "objective_gap_to_ldlt": max(0.0, objective - f_star),
-                "relative_weight_error_to_ldlt": rel_error,
-            }
-        )
+
+    iterations = result.history["iteration"]
+    grad_norms = result.history["grad_norm"]
+    objectives = result.history["objective"]
+    relative_errors = result.history["relative_error"]
+
+    for index in range(len(iterations)):
+        objective = objectives[index]
+        row = {
+            "scenario": scenario,
+            "instance_id": instance_id,
+            "method": result.method,
+            "iteration": int(iterations[index]),
+            "grad_norm": grad_norms[index],
+            "objective": objective,
+            "objective_gap_to_ldlt": max(0.0, objective - f_star),
+            "relative_weight_error_to_ldlt": relative_errors[index],
+        }
+        rows.append(row)
+
     return rows
 
 
-def write_csv(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
+def write_csv(path, fields, rows):
     with path.open("w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
 
 
-def plot_convergence(history_rows: list[dict[str, object]], figures_dir: Path) -> None:
-    validation_rows = [
-        row for row in history_rows if row["scenario"] == "validation"
-    ]
-    if not validation_rows:
+def plot_convergence(history_rows, figures_dir):
+    validation_rows = []
+    for row in history_rows:
+        if row["scenario"] == "validation":
+            validation_rows.append(row)
+
+    if len(validation_rows) == 0:
         return
 
+    methods = sorted(set(row["method"] for row in validation_rows))
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
-    for method in sorted({row["method"] for row in validation_rows}):
-        method_rows = [row for row in validation_rows if row["method"] == method]
+
+    for method in methods:
+        method_rows = []
+        for row in validation_rows:
+            if row["method"] == method:
+                method_rows.append(row)
+
         iterations = [row["iteration"] for row in method_rows]
         grad_norms = [max(float(row["grad_norm"]), 1e-300) for row in method_rows]
         gaps = [
-            max(float(row["objective_gap_to_ldlt"]), 1e-300) for row in method_rows
+            max(float(row["objective_gap_to_ldlt"]), 1e-300)
+            for row in method_rows
         ]
+
         axes[0].semilogy(iterations, grad_norms, label=method)
         axes[1].semilogy(iterations, gaps, label=method)
 
@@ -444,32 +464,41 @@ def plot_convergence(history_rows: list[dict[str, object]], figures_dir: Path) -
     axes[1].set_title("Objective Gap to LDLT")
     axes[1].set_xlabel("Iteration")
     axes[1].set_ylabel("f(W) - f(W*)")
+
     for axis in axes:
         axis.grid(True, which="both", alpha=0.3)
         axis.legend()
+
     fig.tight_layout()
     fig.savefig(figures_dir / "convergence_validation.png", dpi=160)
     plt.close(fig)
 
 
-def plot_conditioning(summary_rows: list[dict[str, object]], figures_dir: Path) -> None:
-    rows = [
-        row
-        for row in summary_rows
-        if row["scenario"] == "conditioning" and row["method"] in {"Heavy Ball", "Nesterov"}
-    ]
-    if not rows:
+def plot_conditioning(summary_rows, figures_dir):
+    rows = []
+    for row in summary_rows:
+        is_conditioning = row["scenario"] == "conditioning"
+        is_iterative = row["method"] in ["Heavy Ball", "Nesterov"]
+        if is_conditioning and is_iterative:
+            rows.append(row)
+
+    if len(rows) == 0:
         return
 
+    methods = sorted(set(row["method"] for row in rows))
     fig, axis = plt.subplots(figsize=(6.5, 4.5))
-    for method in sorted({row["method"] for row in rows}):
-        method_rows = sorted(
-            [row for row in rows if row["method"] == method],
-            key=lambda row: float(row["lambda_reg"]),
-        )
+
+    for method in methods:
+        method_rows = []
+        for row in rows:
+            if row["method"] == method:
+                method_rows.append(row)
+
+        method_rows.sort(key=lambda row: float(row["lambda_reg"]))
         lambdas = [float(row["lambda_reg"]) for row in method_rows]
         iterations = [int(row["iterations"]) for row in method_rows]
         axis.plot(lambdas, iterations, marker="o", label=method)
+
     axis.set_xscale("log")
     axis.invert_xaxis()
     axis.set_title("Effect of Regularization on Iterations")
@@ -477,35 +506,43 @@ def plot_conditioning(summary_rows: list[dict[str, object]], figures_dir: Path) 
     axis.set_ylabel("Iterations to tolerance")
     axis.grid(True, which="both", alpha=0.3)
     axis.legend()
+
     fig.tight_layout()
     fig.savefig(figures_dir / "conditioning_iterations.png", dpi=160)
     plt.close(fig)
 
 
-def plot_scaling(summary_rows: list[dict[str, object]], figures_dir: Path) -> None:
-    rows = [
-        row
-        for row in summary_rows
-        if row["scenario"] == "scaling"
-        and row["method"] in {"LDLT", "Heavy Ball", "Nesterov"}
-    ]
-    if not rows:
+def plot_scaling(summary_rows, figures_dir):
+    rows = []
+    for row in summary_rows:
+        is_scaling = row["scenario"] == "scaling"
+        is_project_method = row["method"] in ["LDLT", "Heavy Ball", "Nesterov"]
+        if is_scaling and is_project_method:
+            rows.append(row)
+
+    if len(rows) == 0:
         return
 
+    methods = sorted(set(row["method"] for row in rows))
     fig, axis = plt.subplots(figsize=(6.5, 4.5))
-    for method in sorted({row["method"] for row in rows}):
-        method_rows = sorted(
-            [row for row in rows if row["method"] == method],
-            key=lambda row: int(row["n_variables_per_output"]),
-        )
+
+    for method in methods:
+        method_rows = []
+        for row in rows:
+            if row["method"] == method:
+                method_rows.append(row)
+
+        method_rows.sort(key=lambda row: int(row["n_variables_per_output"]))
         n_variables = [int(row["n_variables_per_output"]) for row in method_rows]
         times = [float(row["elapsed_seconds"]) for row in method_rows]
         axis.plot(n_variables, times, marker="o", label=method)
+
     axis.set_title("Runtime Scaling with Hidden Width")
     axis.set_xlabel("Variables per output row (hidden_width + 1)")
     axis.set_ylabel("Seconds")
     axis.grid(True, which="both", alpha=0.3)
     axis.legend()
+
     fig.tight_layout()
     fig.savefig(figures_dir / "scaling_runtime.png", dpi=160)
     plt.close(fig)
