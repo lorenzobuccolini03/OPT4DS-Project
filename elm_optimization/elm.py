@@ -380,9 +380,9 @@ def create_elm_classification_instance(
         standardize_data=False,
     )
 
-# 13. This function is used to compute the predicted scores W_2 * H, which are needed to evaluate the training and test accuracy.
+# 13. This function is used to compute the predicted scores Y = W_2 * H
 def predict_scores(weights, h_aug):
-    """Compute predictions W_2 * H."""
+    """Compute predictions Y = W_2 * H."""
 
-    scores = weights @ h_aug # W_2 * H
+    scores = weights @ h_aug # Y = W_2 * H
     return scores
