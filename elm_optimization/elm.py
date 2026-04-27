@@ -8,7 +8,26 @@ Here H is the augmented hidden-layer matrix. Its last row is made of ones,
 so the output bias is included in the matrix W.
 """
 
+# import numpy for numerical computations.
 import numpy as np
+
+###################################################################################
+# ELM problem building blocks: 
+# - 1. ELMInstance class to store all the data and matrices related to one fixed ELM problem.
+# - Helper functions for building the ELM problem, including:
+#       2. one_hot: Convert integer labels into a one-hot matrix.
+#       3. standardize_train_test: Standardize the data using only training-set statistics.
+#       4. generate_gaussian_classification_data: Generate a synthetic classification dataset with Gaussian clusters.
+#       5. generate_correlated_classification_data: Generate a synthetic classification dataset with controlled feature scales and correlation.
+#       6. apply_sparse_feature_mask: Apply a random sparse feature mask to the training and test data.
+#       7. activation_function: Apply the chosen hidden-layer activation function.
+#       8. build_hidden_matrix: Compute the hidden-layer activations for the training and test sets.
+#       9. augment_hidden_matrix: Add the final row of ones to the hidden-layer matrix, which allows the output bias to be included in the matrix W.
+#       10. formulate_elm_system: Build the matrices Q and C for the optimal
+#       11. create_elm_instance_from_arrays: Create an ELMInstance object from given data arrays, random hidden layer, and the matrices Q and C.
+#       12. create_elm_classification_instance: Create a reproducible ELM instance with synthetic data, random hidden layer, and the matrices Q and C.
+#       13. predict_scores: Compute the predicted scores Y = W_2 * H
+###################################################################################
 
 # 1. This class is used to store all the data and matrices related to one fixed ELM problem.
 # -> Each experiment runs on a list of ELMInstance objects.
