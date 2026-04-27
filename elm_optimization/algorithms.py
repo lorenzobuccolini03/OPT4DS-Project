@@ -8,7 +8,7 @@ import numpy as np
 from .metrics import frobenius_norm
 
 ################################################################################
-# 0) ALGORITHMS FOR ELM OPTIMIZATION
+# 0) OBJECTS FOR BOUNDS AND OPTIMIZATION RESULTS
 # 1. SpectralBounds used to hold the spectral constants
 # 2. OptimizationResult used to hold the output of the optimization methods
 

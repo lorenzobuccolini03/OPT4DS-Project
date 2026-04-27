@@ -12,23 +12,31 @@ so the output bias is included in the matrix W.
 import numpy as np
 
 ###################################################################################
-# ELM problem building blocks: 
-# - 1. ELMInstance class to store all the data and matrices related to one fixed ELM problem.
-# - Helper functions for building the ELM problem, including:
-#       2. one_hot: Convert integer labels into a one-hot matrix.
-#       3. standardize_train_test: Standardize the data using only training-set statistics.
-#       4. generate_gaussian_classification_data: Generate a synthetic classification dataset with Gaussian clusters.
-#       5. generate_correlated_classification_data: Generate a synthetic classification dataset with controlled feature scales and correlation.
-#       6. apply_sparse_feature_mask: Apply a random sparse feature mask to the training and test data.
-#       7. activation_function: Apply the chosen hidden-layer activation function.
-#       8. build_hidden_matrix: Compute the hidden-layer activations for the training and test sets.
-#       9. augment_hidden_matrix: Add the final row of ones to the hidden-layer matrix, which allows the output bias to be included in the matrix W.
-#       10. formulate_elm_system: Build the matrices Q and C for the optimal
-#       11. create_elm_instance_from_arrays: Create an ELMInstance object from given data arrays, random hidden layer, and the matrices Q and C.
-#       12. create_elm_classification_instance: Create a reproducible ELM instance with synthetic data, random hidden layer, and the matrices Q and C.
-#       13. predict_scores: Compute the predicted scores Y = W_2 * H
+# 0) OBJECTS FOR ELM OPTIMIZATION
+# 1. ELMInstance class to store all the data and matrices related to one fixed ELM problem.
+# 
+# 2) Dataset generation and preprocessing functions:
+# 1. one_hot: Convert integer labels into a one-hot matrix.
+# 2. standardize_train_test: Standardize the data using only training-set statistics.
+# 3. generate_gaussian_classification_data: Generate a synthetic classification dataset with Gaussian clusters.
+# 4. generate_correlated_classification_data: Generate a synthetic classification dataset with controlled feature scales and correlation.
+# 5. apply_sparse_feature_mask: Apply a random sparse feature mask to the training and test data.
+#
+# 3) Main function to create a reproducible ELM instance with synthetic data
+# 1. activation_function (sigma): Apply the chosen hidden-layer activation function.
+# 2. build_hidden_matrix (H): Compute the hidden-layer activations for the training and test sets.
+# 3. augment_hidden_matrix (H_tilde): Add the final row of ones to the hidden-layer matrix, which allows the output bias to be included in the matrix W.
+# 4. formulate_elm_system: Build the matrices Q and C for the optimal
+# 5. create_elm_instance_from_arrays: Create an ELMInstance object from given data arrays, random hidden layer, and the matrices Q and C.
+# 6. create_elm_classification_instance: Create a reproducible ELM instance with synthetic data, random hidden layer, and the matrices Q and C.
+# 7. predict_scores (Y): Compute the predicted scores Y = W_2 * H
 ###################################################################################
 
+
+
+################################################
+# 0) ELMInstance CLASS TO STORE THE ELM PROBLEM
+################################################
 # 1. This class is used to store all the data and matrices related to one fixed ELM problem.
 # -> Each experiment runs on a list of ELMInstance objects.
 class ELMInstance:
@@ -74,9 +82,11 @@ class ELMInstance:
         self.hidden_width = hidden_weights.shape[0]
         self.n_variables_per_output = h_train_aug.shape[0]
 
-# Helper functions for building the ELM problem.
+####################################################
+# 1) DATASET GENERATION AND PREPROCESSING FUNCTIONS
+####################################################
+# 1. This function is used to convert integer labels into a one-hot matrix.
 
-# 2. This function is used to convert integer labels into a one-hot matrix.
 def one_hot(labels, n_classes):
     """Convert integer labels into a one-hot matrix."""
 
@@ -84,7 +94,7 @@ def one_hot(labels, n_classes):
     encoded[labels, np.arange(labels.size)] = 1.0
     return encoded
 
-# 3. This function is used to standardize the data using only training-set statistics.
+# 2. This function is used to standardize the data using only training-set statistics.
 def standardize_train_test(x_train, x_test):
     """Standardize the data using only training-set statistics."""
 
@@ -96,7 +106,7 @@ def standardize_train_test(x_train, x_test):
     x_test_scaled = (x_test - mean) / std
     return x_train_scaled, x_test_scaled
 
-# 4. This function is used to generate a synthetic classification dataset with Gaussian clusters.
+# 3. This function is used to generate a synthetic classification dataset with Gaussian clusters.
 def generate_gaussian_classification_data(
     n_train,
     n_test,
@@ -129,7 +139,7 @@ def generate_gaussian_classification_data(
     x_train, x_test = standardize_train_test(x_train, x_test)
     return x_train, train_labels, x_test, test_labels
 
-# 5. This function is used to generate a synthetic classification dataset with controlled feature scales and correlation.
+# 4. This function is used to generate a synthetic classification dataset with controlled feature scales and correlation.
 def generate_correlated_classification_data(
     n_train,
     n_test,
@@ -226,7 +236,7 @@ def _sample_correlated_points(
     x = centers[:, labels] + mixed_noise # Each column is a data point obtained by adding the mixed noise to the corresponding class center.
     return x
 
-# 6. This function is used to apply a random sparse feature mask to the training and test data
+# 5. This function is used to apply a random sparse feature mask to the training and test data
 def apply_sparse_feature_mask(x_train, x_test, zero_probability, seed):
     """Set a fixed random part of the feature matrix to zero.
 
@@ -250,7 +260,10 @@ def apply_sparse_feature_mask(x_train, x_test, zero_probability, seed):
 
     return sparse_x_train, sparse_x_test
 
-# 7. This function is used to apply the chosen hidden-layer activation function to the affine part W1 X + b1.
+############################################################################
+# 2) MAIN FUNCTION TO CREATE A REPRODUCIBLE ELM INSTANCE WITH SYNTHETIC DATA
+############################################################################
+# 1. This function is used to apply the chosen hidden-layer activation function to the affine part W1 X + b1.
 def activation_function(z, activation):
     """Apply the chosen hidden-layer activation function."""
 
@@ -265,7 +278,7 @@ def activation_function(z, activation):
 
     raise ValueError("Unsupported activation: " + str(activation))
 
-# 8. This function is used to compute the hidden-layer activations for the training and test sets.
+# 2. This function is used to compute the hidden-layer activations for the training and test sets.
 def build_hidden_matrix(x, hidden_weights, hidden_bias, activation):
     """Compute H = sigma(W1 X + b1 1^T)."""
 
@@ -273,7 +286,7 @@ def build_hidden_matrix(x, hidden_weights, hidden_bias, activation):
     h = activation_function(affine_part, activation) # H = sigma(W_1 * x + b_1^T)
     return h
 
-# 9. This function is used to add the final row of ones to the hidden-layer matrix, which allows the output bias to be included in the matrix W.
+# 3. This function is used to add the final row of ones to the hidden-layer matrix, which allows the output bias to be included in the matrix W.
 def augment_hidden_matrix(h):
     """Add the final row of ones used for the output bias."""
 
@@ -281,7 +294,7 @@ def augment_hidden_matrix(h):
     h_aug = np.vstack([h, ones]) # add the row of ones at the bottom of H
     return h_aug # H_aug has shape (hidden_width + 1, n_samples)
 
-# 10. This function is used to build the matrices Q and C for the optimality equation W Q = C, which is the system solved by all the algorithms.
+# 4. This function is used to build the matrices Q and C for the optimality equation W Q = C, which is the system solved by all the algorithms.
 def formulate_elm_system(h_aug, y, lambda_reg):
     """Build Q and C for the optimality equation W Q = C.
 
@@ -302,7 +315,7 @@ def formulate_elm_system(h_aug, y, lambda_reg):
     c = (y @ h_aug.T) / n_samples # C = Y * H^t /n
     return q, c
 
-# 11. This function is used to create an ELMInstance object from given data arrays, random hidden layer, and the matrices Q and C.
+# 5. This function is used to create an ELMInstance object from given data arrays, random hidden layer, and the matrices Q and C.
 def create_elm_instance_from_arrays(
     x_train,
     train_labels,
@@ -359,7 +372,7 @@ def create_elm_instance_from_arrays(
         activation,
     )
 
-# 12. This function is used to create a reproducible ELM instance with synthetic data, random hidden layer, and the matrices Q and C.
+# 6. This function is used to create a reproducible ELM instance with synthetic data, random hidden layer, and the matrices Q and C.
 def create_elm_classification_instance(
     n_train=1000,
     n_test=300,
@@ -399,7 +412,7 @@ def create_elm_classification_instance(
         standardize_data=False,
     )
 
-# 13. This function is used to compute the predicted scores Y = W_2 * H
+# 7. This function is used to compute the predicted scores Y = W_2 * H
 def predict_scores(weights, h_aug):
     """Compute predictions Y = W_2 * H."""
 
