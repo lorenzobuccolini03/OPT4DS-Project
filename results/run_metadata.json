@@ -2,7 +2,7 @@
   "suite": "quick",
   "seed": 7,
   "tol": 1e-06,
-  "max_iter": 12000,
-  "record_every": 20,
-  "notes": "LDLT, Heavy Ball, and Nesterov are the hand-written project algorithms. Built-in routines are used only in the benchmark section to validate the numerical results."
+  "max_iter": 1500,
+  "record_every": 50,
+  "notes": "LDLT, Heavy Ball, and Nesterov are the hand-written project algorithms. Built-in routines are used only in the benchmark section to validate the numerical results. PyTorch SGD with momentum and PyTorch SGD with Nesterov are external library optimizer references."
 }

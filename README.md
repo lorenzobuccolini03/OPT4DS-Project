@@ -24,11 +24,11 @@ methods. NumPy built-in routines are included only in the experiment script as s
 
 The testing section uses several ELM training problems instead of only one simple Gaussian dataset:
 
-- `synthetic_well_conditioned`: an easy synthetic problem with low feature correlation and stronger regularization.
-- `synthetic_ill_conditioned`: a harder synthetic problem with correlated features, a wider hidden layer, and smaller regularization.
-- `synthetic_sparse`: a partially sparse synthetic problem where many input entries are set to zero before building the hidden layer.
+- `synthetic_well_conditioned`: easy synthetic problems with correlation from `0.1` to `0.9`.
+- `synthetic_ill_conditioned`: harder synthetic problems with correlation from `0.1` to `0.9`, a wider hidden layer, and smaller regularization.
+- `synthetic_sparse`: partially sparse synthetic problems with zero probability from `0.0` to `0.9`.
 - `wine`: a real multiclass classification dataset loaded from scikit-learn.
-- `digits`: an extra real dataset used only by the full suite.
+- `digits`: a real handwritten-digit dataset loaded from scikit-learn.
 
 For every scenario the code builds the same ELM objects: hidden layer, augmented matrix `H`, normal matrix `Q`, matrix `C`, and the regularized output-weight problem.
 
@@ -70,7 +70,11 @@ The output is written to `results/`:
 
 - `summary.csv`: one row per method and scenario, including scratch methods and built-in benchmarks.
 - `conditioning_summary.csv`: dimensions, lambda, Power Method estimate of `lambda_max(Q)`, `L`, `mu`, and condition number for each `Q`.
-- `builtin_benchmark.csv`: only the built-in reference rows, kept separate from the project algorithms.
-- `convergence_history.csv`: gradient norms, objective gaps, and relative errors during Heavy Ball and Nesterov.
-- `figures/*_convergence.png`: convergence curves for each scenario.
+- `builtin_benchmark.csv`: NumPy reference rows, kept separate from the project algorithms.
+- `library_optimizer_benchmark.csv`: PyTorch momentum and PyTorch Nesterov reference rows.
+- `convergence_history.csv`: gradient norms, objective gaps, and relative errors for the iterative methods.
+- `figures/*_convergence.png`: main convergence comparison for Heavy Ball, Nesterov, and the PyTorch reference optimizers.
+- `figures/*_nesterov_beta_comparison.png`: focused comparison between fixed-beta Nesterov and variable-beta Nesterov.
 - `figures/conditioning_overview.png`: comparison of estimated condition numbers.
+- `figures/convergence_time_all_cases.png`: bar plot of elapsed time for every method and every tested case.
+- `figures/convergence_time_*.png`: per-dataset bar plots of elapsed time.
