@@ -10,5 +10,5 @@
   ],
   "max_iter": 8000,
   "record_every": 50,
-  "notes": "LDLT, Heavy Ball, and Nesterov are the hand-written project algorithms. Built-in routines are used only in the benchmark section to validate the numerical results. PyTorch SGD with momentum and PyTorch SGD with Nesterov are external library optimizer references."
+  "notes": "LDLT, Heavy Ball, and Nesterov are the hand-written project algorithms. Built-in routines are used only in the benchmark section to validate the numerical results. PyTorch SGD with momentum and PyTorch SGD with Nesterov are external library optimizer references. Dimension sweeps count the trainable output weights, computed as hidden_width * n_classes. The random hidden-layer weights are generated once for each ELM instance and then kept fixed."
 }

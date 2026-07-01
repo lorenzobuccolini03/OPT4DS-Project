@@ -17,7 +17,7 @@ where the hidden layer is generated once and then kept fixed.
 - `Nesterov`: accelerated gradient with the gradient evaluated at the look-ahead point.
 
 The three project algorithms are written directly in Python/NumPy. The code does not use
-`np.linalg.cholesky`, `np.linalg.solve`, `scipy.optimize`, or other built-in solvers for the actual project
+`np.linalg.solve`, `scipy.optimize`, or other built-in solvers for the actual project
 methods. NumPy built-in routines are included only in the experiment script as separate benchmark references.
 
 ## Experiment Scenarios
@@ -68,11 +68,12 @@ python3 run_experiments.py --suite full --tol 1e-6
 
 The detailed analysis section is also executed by default. In the `full` suite,
 the synthetic epsilon/correlation/sparsity studies use the reference size
-requested for the report: 1000 training samples and about 10000 hidden-layer
-weights. The dimensionality-scaling studies use a stronger sweep of 10000,
-50000, and 100000 hidden-layer weights. The `quick` suite uses a smaller copy of
-the same experiments, so it is useful for checking the code without waiting too
-long.
+requested for the report: 1000 training samples and about 10000 trainable
+output weights. The dimensionality-scaling studies use a stronger sweep of
+10000, 50000, and 100000 output weights. The hidden-layer weights of the ELM are
+still sampled randomly and then kept fixed; the algorithms optimize only the
+output matrix. The `quick` suite uses a smaller copy of the same experiments, so
+it is useful for checking the code without waiting too long.
 
 You can choose the epsilon values for the detailed sweeps:
 
@@ -113,16 +114,36 @@ The output is written to `results/`:
 The script also writes a second group of files with the prefix `requested_`.
 These files follow the extra testing checklist more directly:
 
-- `requested_dimension_scaling_times.csv`: time of our LDLT, Heavy Ball, and Nesterov as hidden-layer weights increase from 10000 to 50000 and 100000 in the `full` suite.
+- `requested_dimension_scaling_times.csv`: time of our LDLT, Heavy Ball, and Nesterov as output weights increase from 10000 to 50000 and 100000 in the `full` suite.
 - `requested_dimension_rho_times.csv`: time of our three algorithms for three dimensions and three values of `rho`.
 - `requested_dimension_sparsity_times.csv`: time of our three algorithms for three dimensions and three sparseness percentages.
 - `requested_library_rho_times.csv`: time comparison between our iterative methods and PyTorch references while dimension and `rho` vary.
 - `requested_library_sparsity_times.csv`: same comparison while dimension and sparseness vary.
-- `requested_ldlt_builtin_times.csv`: our LDLT against NumPy solve and NumPy Cholesky.
+- `requested_ldlt_builtin_times.csv`: our LDLT against NumPy solve and SciPy LDLT.
 - `requested_real_dataset_times.csv`: time of our LDLT, Heavy Ball, and Nesterov on Wine and Digits.
+- `real_pytorch_same_initialization.csv`: Wine/Digits comparison between our Heavy Ball/Nesterov and PyTorch momentum/Nesterov, using the same random output-weight initialization for each dataset, hidden size, and epsilon combination.
+- `ldlt_scipy_comparison.csv`: comparison between our LDLT and SciPy LDLT on Wine, Digits, and a synthetic system with known optimum.
 - `figures/requested_conditioning_rho_*.png`: one two-panel convergence plot for each `rho` from `0.1` to `0.9`.
 - `figures/requested_sparsity_*.png`: one two-panel convergence plot for each sparseness value from `0.1` to `0.9`.
 - `figures/requested_rho_time_comparison.png`: runtime of our LDLT, Heavy Ball, and Nesterov as `rho` changes.
 - `figures/requested_library_*.png`: PyTorch-vs-scratch iterative comparisons.
 - `figures/requested_beta_*.png`: fixed-beta Nesterov against variable-beta Nesterov.
 - `figures/requested_real_*_scratch_iterative.png`: Wine/Digits convergence plots for our Heavy Ball and Nesterov.
+- `figures/real_pytorch_time_vs_hidden_size_epsilon_1e-03.png`: Wine/Digits runtime curves at fixed epsilon, comparing our Heavy Ball/Nesterov with PyTorch momentum/Nesterov.
+- `figures/real_pytorch_time_vs_epsilon_extreme_hidden_sizes.png`: four-panel Wine/Digits runtime curves against epsilon, separating the smallest and largest hidden layers.
+- `figures/ldlt_scipy_time_comparison.png`: runtime bar plot comparing our LDLT with SciPy LDLT on the primal Wine, Digits, and known-optimum systems.
+- `figures/ldlt_scipy_known_solution_accuracy.png`: accuracy comparison on the synthetic system where the exact optimum is known.
+
+To regenerate only the Wine/Digits PyTorch comparison with the same random
+initial output-weight matrix, three output-weight sizes, and three epsilon
+values, run:
+
+```bash
+python3 run_experiments.py --only-real-pytorch-comparison --max-iter 3000 --real-comparison-output-weights 10000,50000,100000 --real-comparison-epsilons 1e-3,1e-5,1e-7
+```
+
+To regenerate only the LDLT-vs-SciPy-LDLT comparison, run:
+
+```bash
+python3 run_experiments.py --only-ldlt-scipy-comparison --real-comparison-output-weights 10000,50000,100000
+```

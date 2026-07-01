@@ -24,6 +24,13 @@ from time import perf_counter
 
 import numpy as np
 
+try:
+    from scipy.linalg import ldl as scipy_ldl
+    from scipy.linalg import solve_triangular as scipy_solve_triangular
+except ImportError:
+    scipy_ldl = None
+    scipy_solve_triangular = None
+
 # Matplotlib and Fontconfig create cache files. This keeps them outside the
 # project folder and avoids warnings on machines where the home cache is locked.
 os.environ.setdefault(
@@ -57,13 +64,20 @@ from elm_optimization.algorithms import (
     OptimizationResult,
     estimate_spectral_bounds,
     heavy_ball,
+    ldlt_factorize,
     ldlt_solve_weights,
     nesterov_accelerated_gradient,
+    solve_with_ldlt,
 )
 from elm_optimization.elm import (
+    ELMInstance,
     apply_sparse_feature_mask,
+    augment_hidden_matrix,
+    build_hidden_matrix,
     create_elm_instance_from_arrays,
     generate_correlated_classification_data,
+    one_hot,
+    standardize_train_test,
 )
 from elm_optimization.metrics import (
     classification_accuracy,
@@ -103,6 +117,7 @@ SUMMARY_FIELDS = [
     "mu",
     "activation",
     "hidden_width",
+    "total_output_weights",
     "alpha",
     "beta",
 ]
@@ -118,6 +133,7 @@ CONDITIONING_FIELDS = [
     "n_features",
     "n_classes",
     "hidden_width",
+    "total_output_weights",
     "q_dimension",
     "lambda_reg",
     "power_method_lambda_max_estimate",
@@ -168,7 +184,7 @@ DETAILED_ANALYSIS_FIELDS = [
     "n_features",
     "n_classes",
     "hidden_width",
-    "total_hidden_weights",
+    "total_output_weights",
     "lambda_reg",
     "estimated_L",
     "mu",
@@ -193,6 +209,24 @@ REQUESTED_DIMENSION_TIME_FIELDS = [
     "algorithm",
     "dimensionality",
     "computational_time",
+]
+
+HANDWRITTEN_DIMENSION_SCALING_FIELDS = [
+    "algorithm",
+    "output_weight_count",
+    "hidden_width",
+    "q_dimension",
+    "n_train",
+    "n_test",
+    "n_features",
+    "n_classes",
+    "epsilon",
+    "converged",
+    "iterations",
+    "computational_time_seconds",
+    "final_gradient_norm",
+    "alpha",
+    "beta",
 ]
 
 REQUESTED_RHO_TIME_FIELDS = [
@@ -222,6 +256,79 @@ REQUESTED_REAL_TIME_FIELDS = [
     "computational_time",
 ]
 
+REAL_PYTORCH_COMPARISON_FIELDS = [
+    "algorithm",
+    "dataset",
+    "epsilon",
+    "initial_gradient_norm",
+    "final_gradient_norm",
+    "absolute_gap",
+    "relative_gap",
+    "computational_time_seconds",
+    "number_of_iterations",
+    "hidden_layer_size",
+    "alpha",
+    "beta",
+]
+
+LDLT_SCIPY_COMPARISON_FIELDS = [
+    "dataset",
+    "case_type",
+    "algorithm",
+    "hidden_layer_size",
+    "output_weight_count",
+    "q_dimension",
+    "minimum_value",
+    "computational_time_seconds",
+    "residual_norm",
+    "absolute_error_to_known_optimum",
+    "relative_error_to_known_optimum",
+    "relative_difference_to_our_ldlt",
+]
+
+RHO_CONDITIONING_SWEEP_FIELDS = [
+    "rho",
+    "method",
+    "epsilon",
+    "output_weight_count",
+    "hidden_width",
+    "q_dimension",
+    "n_train",
+    "n_test",
+    "n_features",
+    "n_classes",
+    "lambda_reg",
+    "estimated_L",
+    "mu",
+    "condition_number",
+    "alpha",
+    "beta",
+    "converged",
+    "iterations",
+    "time_seconds",
+    "initial_gradient_norm",
+    "final_gradient_norm",
+    "objective_value",
+    "objective_gap_to_reference",
+    "relative_error_to_reference",
+    "train_accuracy",
+    "test_accuracy",
+]
+
+RHO_CONDITIONING_HISTORY_FIELDS = [
+    "rho",
+    "method",
+    "epsilon",
+    "output_weight_count",
+    "condition_number",
+    "iteration",
+    "relative_gap",
+    "grad_norm",
+    "objective_value",
+    "objective_gap_to_reference",
+    "relative_error_to_reference",
+]
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -249,6 +356,58 @@ def parse_args():
         action="store_true",
         help="Run only the base experiment tables, without the extra study plots.",
     )
+    parser.add_argument(
+        "--only-real-pytorch-comparison",
+        action="store_true",
+        help=(
+            "Run only the Wine/Digits comparison between our HB/Nesterov "
+            "and PyTorch HB/Nesterov using the same random initial weights."
+        ),
+    )
+    parser.add_argument(
+        "--only-ldlt-scipy-comparison",
+        "--only-real-ldlt-cholesky-comparison",
+        dest="only_ldlt_scipy_comparison",
+        action="store_true",
+        help=(
+            "Run only the LDLT comparison between our implementation and "
+            "SciPy LDLT. The old Cholesky option name is still accepted for "
+            "compatibility."
+        ),
+    )
+    parser.add_argument(
+        "--only-rho-conditioning-sweep",
+        action="store_true",
+        help=(
+            "Run only the rho conditioning experiment with hidden_width=10000 "
+            "for our Heavy Ball and Nesterov methods."
+        ),
+    )
+    parser.add_argument(
+        "--only-handwritten-dimension-scaling",
+        action="store_true",
+        help=(
+            "Run only the dimensionality comparison between our LDLT, Heavy "
+            "Ball, and Nesterov implementations."
+        ),
+    )
+    parser.add_argument(
+        "--real-comparison-output-weights",
+        "--real-comparison-hidden-weights",
+        dest="real_comparison_output_weights",
+        default="10000,50000,100000",
+        help=(
+            "Comma-separated target counts for the trainable output weights "
+            "in the real-data comparisons. The old option name "
+            "--real-comparison-hidden-weights is still accepted for "
+            "compatibility."
+        ),
+    )
+    parser.add_argument(
+        "--real-comparison-epsilons",
+        default="1e-3,1e-5,1e-7",
+        help="Comma-separated epsilon values for the real PyTorch comparison.",
+    )
     return parser.parse_args()
 
 
@@ -259,6 +418,95 @@ def main():
     figures_dir = output_dir / "figures"
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.only_real_pytorch_comparison:
+        rows = run_real_pytorch_same_initialization_comparison(
+            output_weight_values=parse_int_list(
+                args.real_comparison_output_weights,
+            ),
+            epsilon_values=parse_float_list(
+                args.real_comparison_epsilons,
+            ),
+            max_iter=choose_max_iter(args.suite, args.max_iter),
+            record_every=args.record_every,
+            seed=args.seed,
+        )
+        output_path = output_dir / "real_pytorch_same_initialization.csv"
+        write_csv(output_path, REAL_PYTORCH_COMPARISON_FIELDS, rows)
+        plot_real_pytorch_time_vs_hidden_size(
+            rows,
+            figures_dir,
+            epsilon=1e-3,
+        )
+        plot_real_pytorch_time_vs_epsilon_extreme_hidden_sizes(
+            rows,
+            figures_dir,
+        )
+        print("Wrote " + str(output_path))
+        return
+
+    if args.only_ldlt_scipy_comparison:
+        rows = run_ldlt_scipy_comparison(
+            output_weight_values=parse_int_list(
+                args.real_comparison_output_weights,
+            ),
+            seed=args.seed,
+        )
+        output_path = output_dir / "ldlt_scipy_comparison.csv"
+        write_csv(output_path, LDLT_SCIPY_COMPARISON_FIELDS, rows)
+        plot_ldlt_scipy_time_bars(rows, figures_dir)
+        plot_ldlt_known_solution_accuracy(rows, figures_dir)
+        print("Wrote " + str(output_path))
+        return
+
+    if args.only_rho_conditioning_sweep:
+        rho_max_iter = choose_rho_sweep_max_iter(args.max_iter)
+        summary_rows, history_rows = run_rho_conditioning_sweep(
+            seed=args.seed,
+            epsilon=args.tol,
+            max_iter=rho_max_iter,
+            record_every=args.record_every,
+        )
+
+        summary_path = output_dir / "rho_conditioning_sweep_summary.csv"
+        history_path = output_dir / "rho_conditioning_sweep_history.csv"
+
+        write_csv(
+            summary_path,
+            RHO_CONDITIONING_SWEEP_FIELDS,
+            summary_rows,
+        )
+        write_csv(
+            history_path,
+            RHO_CONDITIONING_HISTORY_FIELDS,
+            history_rows,
+        )
+
+        remove_old_rho_conditioning_outputs(output_dir, figures_dir)
+        plot_requested_conditioning_effect(history_rows, summary_rows, figures_dir)
+
+        print("Wrote " + str(summary_path))
+        print("Wrote " + str(history_path))
+        return
+
+    if args.only_handwritten_dimension_scaling:
+        epsilon = 1e-3
+        scaling_max_iter = choose_handwritten_scaling_max_iter(args.max_iter)
+        rows = run_handwritten_dimension_scaling(
+            seed=args.seed,
+            epsilon=epsilon,
+            max_iter=scaling_max_iter,
+            record_every=args.record_every,
+        )
+
+        remove_old_dimension_scaling_outputs(output_dir, figures_dir)
+
+        output_path = output_dir / "handwritten_dimension_scaling_times.csv"
+        write_csv(output_path, HANDWRITTEN_DIMENSION_SCALING_FIELDS, rows)
+        plot_handwritten_dimension_scaling_times(rows, figures_dir)
+
+        print("Wrote " + str(output_path))
+        return
 
     max_iter = choose_max_iter(args.suite, args.max_iter)
     scenarios = build_scenarios(args.suite, args.seed)
@@ -371,7 +619,10 @@ def main():
             "algorithms. Built-in routines are used only in the benchmark "
             "section to validate the numerical results. PyTorch SGD with "
             "momentum and PyTorch SGD with Nesterov are external library "
-            "optimizer references."
+            "optimizer references. Dimension sweeps count the trainable "
+            "output weights, computed as hidden_width * n_classes. The "
+            "random hidden-layer weights are generated once for each ELM "
+            "instance and then kept fixed."
         ),
     }
     metadata_path = output_dir / "run_metadata.json"
@@ -397,6 +648,27 @@ def choose_max_iter(suite, max_iter_override):
     if suite == "full":
         return 8000
     return 1500
+
+
+def choose_rho_sweep_max_iter(max_iter_override):
+    """Default budget for the large hidden-width rho sweep.
+
+    The hidden layer has 10000 neurons, so each gradient step is much more
+    expensive than in the small smoke tests. The user can still override this
+    with --max-iter when a longer run is needed.
+    """
+
+    if max_iter_override is not None:
+        return max_iter_override
+    return 500
+
+
+def choose_handwritten_scaling_max_iter(max_iter_override):
+    """Default iteration budget for the handwritten scaling experiment."""
+
+    if max_iter_override is not None:
+        return max_iter_override
+    return 5000
 
 
 def build_scenarios(suite, seed):
@@ -760,6 +1032,14 @@ def check_sklearn_available():
         )
 
 
+def check_scipy_available():
+    if scipy_ldl is None or scipy_solve_triangular is None:
+        raise ImportError(
+            "SciPy is required for the LDLT reference benchmark. "
+            "Install it with: python3 -m pip install -r requirements.txt"
+        )
+
+
 def run_one_scenario(scenario, tol, max_iter, record_every, seed):
     instance = scenario["instance"]
     q = instance.q
@@ -861,7 +1141,7 @@ def run_one_scenario(scenario, tol, max_iter, record_every, seed):
         record_every=record_every,
     )
 
-    numpy_cholesky = numpy_cholesky_reference(q, c)
+    scipy_ldlt = scipy_ldlt_reference(q, c)
 
     results = [
         ldlt_result,
@@ -871,7 +1151,7 @@ def run_one_scenario(scenario, tol, max_iter, record_every, seed):
         pytorch_hb_result,
         pytorch_nesterov_result,
         numpy_reference,
-        numpy_cholesky,
+        scipy_ldlt,
     ]
 
     summary = []
@@ -1031,7 +1311,7 @@ def fixed_dimension_config(suite):
     """Dimension used in the correlation/sparsity and epsilon studies.
 
     In the full suite we use the requested reference size: 1000 training
-    samples and about 10000 hidden-layer weights. The quick suite uses a
+    samples and about 10000 output weights. The quick suite uses a
     smaller version so that the code can be checked quickly during development.
     """
 
@@ -1040,14 +1320,16 @@ def fixed_dimension_config(suite):
             "n_train": 1000,
             "n_test": 350,
             "n_features": 20,
-            "total_hidden_weights": 10000,
+            "n_classes": 20,
+            "target_output_weights": 10000,
         }
 
     return {
         "n_train": 260,
         "n_test": 100,
         "n_features": 10,
-        "total_hidden_weights": 600,
+        "n_classes": 6,
+        "target_output_weights": 600,
     }
 
 
@@ -1055,43 +1337,57 @@ def dimension_scaling_configs(suite):
     """Return dimensions for the scaling test.
 
     The full suite keeps the input size at 1000 training samples and uses a
-    much more visible hidden-weight sweep: 10000, 50000, and 100000. With
-    100 input features, this corresponds to 100, 500, and 1000 hidden neurons.
-    This keeps the test meaningful without making the scratch LDLT factorization
-    completely impractical.
+    visible output-weight sweep: 10000, 50000, and 100000. The random hidden
+    layer is still fixed after it is generated; the algorithms optimize only
+    the output matrix.
     """
 
     configs = []
 
     if suite == "full":
         levels = [
-            (1000, 350, 100, 10000),
-            (1000, 350, 100, 50000),
-            (1000, 350, 100, 100000),
+            (1000, 350, 100, 100, 10000),
+            (1000, 350, 100, 100, 50000),
+            (1000, 350, 100, 100, 100000),
         ]
     else:
         levels = [
-            (180, 70, 10, 300),
-            (240, 90, 10, 600),
-            (300, 110, 10, 900),
+            (180, 70, 10, 6, 300),
+            (240, 90, 10, 6, 600),
+            (300, 110, 10, 6, 900),
         ]
 
-    for n_train, n_test, n_features, total_weights in levels:
+    for n_train, n_test, n_features, n_classes, total_weights in levels:
         configs.append(
             {
                 "n_train": n_train,
                 "n_test": n_test,
                 "n_features": n_features,
-                "total_hidden_weights": total_weights,
+                "n_classes": n_classes,
+                "target_output_weights": total_weights,
             }
         )
 
     return configs
 
 
-def hidden_width_from_total_weights(config):
-    width = int(round(config["total_hidden_weights"] / config["n_features"]))
+def hidden_width_from_output_weights(target_output_weights, n_classes):
+    """Convert a target number of output weights into hidden neurons."""
+
+    width = int(round(float(target_output_weights) / float(n_classes)))
     return max(2, width)
+
+
+def output_weight_count(instance):
+    """Number of trainable weights in the hidden-to-output matrix.
+
+    The hidden-layer weights are random and fixed in an ELM. The optimization
+    algorithms update the output matrix, whose main size is
+    hidden_width * n_classes. The augmented bias row is still represented by
+    q_dimension = hidden_width + 1 in the mathematical problem.
+    """
+
+    return instance.hidden_width * instance.n_classes
 
 
 def create_synthetic_analysis_scenario(
@@ -1105,7 +1401,6 @@ def create_synthetic_analysis_scenario(
     n_train = dimension_config["n_train"]
     n_test = dimension_config["n_test"]
     n_features = dimension_config["n_features"]
-    hidden_width = hidden_width_from_total_weights(dimension_config)
 
     if kind == "well":
         dataset_name = "synthetic_well_conditioned"
@@ -1148,6 +1443,14 @@ def create_synthetic_analysis_scenario(
         description = "Detailed sparse synthetic case."
     else:
         raise ValueError("Unknown synthetic analysis kind: " + kind)
+
+    if "n_classes" in dimension_config:
+        n_classes = dimension_config["n_classes"]
+
+    hidden_width = hidden_width_from_output_weights(
+        dimension_config["target_output_weights"],
+        n_classes,
+    )
 
     data = generate_correlated_classification_data(
         n_train=n_train,
@@ -1203,6 +1506,625 @@ def create_synthetic_analysis_scenario(
     return scenario
 
 
+def conditioning_effect_rho_values():
+    return [0.1, 0.5, 0.9]
+
+
+def conditioning_effect_dimension_config():
+    """Fixed size requested for the conditioning-number experiment."""
+
+    return {
+        "n_train": 1000,
+        "n_test": 350,
+        "n_features": 100,
+        "n_classes": 100,
+        "target_output_weights": 10000,
+    }
+
+
+def create_conditioning_effect_instance(rho, config, seed):
+    """Create the fixed-size ELM problem for one rho value.
+
+    The synthetic features are sampled from an equicorrelated covariance matrix.
+    This makes rho directly control the feature correlation and gives a clearer
+    conditioning effect in Q.
+    """
+
+    n_train = config["n_train"]
+    n_test = config["n_test"]
+    n_features = config["n_features"]
+    n_classes = config["n_classes"]
+    hidden_width = hidden_width_from_output_weights(
+        config["target_output_weights"],
+        n_classes,
+    )
+
+    data = generate_equicorrelated_classification_data(
+        n_train,
+        n_test,
+        n_features,
+        n_classes,
+        rho,
+        seed,
+    )
+    x_train, train_labels, x_test, test_labels = data
+
+    return create_elm_instance_from_arrays(
+        x_train,
+        train_labels,
+        x_test,
+        test_labels,
+        hidden_width=hidden_width,
+        lambda_reg=1e-3,
+        activation="linear",
+        hidden_scale=1.0,
+        seed=seed,
+        standardize_data=False,
+    )
+
+
+def generate_equicorrelated_classification_data(
+    n_train,
+    n_test,
+    n_features,
+    n_classes,
+    rho,
+    seed,
+):
+    """Generate synthetic data with approximately rho-correlated features."""
+
+    rng = np.random.default_rng(seed)
+    rho = min(max(rho, 0.0), 0.99)
+
+    covariance = (1.0 - rho) * np.eye(n_features)
+    covariance = covariance + rho * np.ones((n_features, n_features))
+    covariance = covariance + 1e-12 * np.eye(n_features)
+    cholesky = np.linalg.cholesky(covariance)
+
+    class_sep = 0.4
+    centers = class_sep * rng.normal(size=(n_features, n_classes))
+
+    train_labels = rng.integers(0, n_classes, size=n_train)
+    test_labels = rng.integers(0, n_classes, size=n_test)
+
+    train_noise = cholesky @ rng.normal(size=(n_features, n_train))
+    test_noise = cholesky @ rng.normal(size=(n_features, n_test))
+
+    x_train = centers[:, train_labels] + train_noise
+    x_test = centers[:, test_labels] + test_noise
+    x_train, x_test = standardize_train_test(x_train, x_test)
+    return x_train, train_labels, x_test, test_labels
+
+
+def run_rho_conditioning_sweep(seed, epsilon, max_iter, record_every):
+    """Run our HB and Nesterov for three rho values at fixed size.
+
+    The fixed size is 1000 training examples and 10000 hidden-to-output
+    weights. The reference optimum used for the relative gap is computed with
+    our hand-written LDLT solver.
+    """
+
+    summary_rows = []
+    history_rows = []
+    rho_values = conditioning_effect_rho_values()
+    config = conditioning_effect_dimension_config()
+    base_seed = seed + 1000
+
+    for index in range(len(rho_values)):
+        rho = rho_values[index]
+        print(
+            "Running conditioning effect: rho="
+            + format(rho, ".1f")
+            + ", output weights=10000"
+        )
+
+        instance = create_conditioning_effect_instance(
+            rho,
+            config,
+            base_seed,
+        )
+
+        spectral = estimate_spectral_bounds(
+            instance.q,
+            instance.lambda_reg,
+            seed=base_seed,
+            l_safety_factor=1.01,
+        )
+
+        ldlt_result = ldlt_solve_weights(instance.q, instance.c)
+
+        def objective_fn(weights):
+            return objective_value(
+                weights,
+                instance.h_train_aug,
+                instance.y_train,
+                instance.lambda_reg,
+            )
+
+        reference_weights = ldlt_result.weights
+        reference_objective = objective_fn(reference_weights)
+        w0 = np.zeros_like(instance.c)
+
+        hb_result = heavy_ball(
+            instance.q,
+            instance.c,
+            w0,
+            mu=spectral.mu,
+            l_smooth=spectral.l_smooth,
+            tol=epsilon,
+            max_iter=max_iter,
+            objective_fn=objective_fn,
+            reference_weights=reference_weights,
+            record_every=record_every,
+        )
+        nag_result = nesterov_accelerated_gradient(
+            instance.q,
+            instance.c,
+            w0,
+            mu=spectral.mu,
+            l_smooth=spectral.l_smooth,
+            tol=epsilon,
+            max_iter=max_iter,
+            objective_fn=objective_fn,
+            reference_weights=reference_weights,
+            record_every=record_every,
+        )
+
+        results = [hb_result, nag_result]
+        for result in results:
+            summary_rows.append(
+                make_rho_conditioning_summary_row(
+                    rho,
+                    epsilon,
+                    instance,
+                    spectral,
+                    result,
+                    reference_weights,
+                    reference_objective,
+                    objective_fn,
+                )
+            )
+            history_rows.extend(
+                make_rho_conditioning_history_rows(
+                    rho,
+                    epsilon,
+                    output_weight_count(instance),
+                    spectral.condition_estimate,
+                    result,
+                    reference_objective,
+                )
+            )
+
+    return summary_rows, history_rows
+
+
+def create_rho_conditioning_instance(rho, seed):
+    """Create one synthetic ELM instance for the rho sweep.
+
+    The hidden layer is fixed after random generation, as in the usual ELM
+    setting. The optimization algorithms update only the output weights.
+    """
+
+    n_train = 1000
+    n_test = 300
+    n_features = 30
+    n_classes = 2
+    hidden_width = 10000
+    lambda_reg = 1e-3
+    activation = "linear"
+    hidden_scale = 1.0
+
+    feature_scales = np.ones(n_features)
+    data = generate_correlated_classification_data(
+        n_train=n_train,
+        n_test=n_test,
+        n_features=n_features,
+        n_classes=n_classes,
+        class_sep=1.6,
+        noise=0.9,
+        correlation_strength=rho,
+        feature_scales=feature_scales,
+        seed=seed,
+    )
+    x_train, train_labels, x_test, test_labels = data
+
+    y_train = one_hot(train_labels, n_classes)
+    y_test = one_hot(test_labels, n_classes)
+
+    rng = np.random.default_rng(seed + 10000)
+    hidden_weights = rng.normal(size=(hidden_width, n_features))
+    hidden_weights = hidden_scale * hidden_weights / np.sqrt(float(n_features))
+    # The rho sweep is about conditioning caused by the input correlation.
+    # A very small hidden bias avoids hiding that effect behind a large
+    # constant component in the hidden matrix.
+    hidden_bias = rng.uniform(-0.01, 0.01, size=hidden_width)
+
+    h_train = build_hidden_matrix(
+        x_train,
+        hidden_weights,
+        hidden_bias,
+        activation,
+    )
+    h_test = build_hidden_matrix(
+        x_test,
+        hidden_weights,
+        hidden_bias,
+        activation,
+    )
+    h_train_aug = augment_hidden_matrix(h_train)
+    h_test_aug = augment_hidden_matrix(h_test)
+
+    # For this large hidden layer experiment we avoid storing the full primal
+    # matrix Q. The iterative algorithms below compute the same gradient from H.
+    q = None
+    c = (y_train @ h_train_aug.T) / float(n_train)
+
+    return ELMInstance(
+        x_train,
+        y_train,
+        train_labels,
+        x_test,
+        y_test,
+        test_labels,
+        hidden_weights,
+        hidden_bias,
+        h_train_aug,
+        h_test_aug,
+        q,
+        c,
+        lambda_reg,
+        activation,
+    )
+
+
+def estimate_spectral_bounds_from_h_exact(instance):
+    """Estimate L and mu from the smaller Gram matrix H^T H.
+
+    The primal matrix would be Q = H H^T / n + lambda I. Since H has many more
+    rows than columns in this experiment, the non-zero eigenvalues of H H^T and
+    H^T H are the same. Therefore we can obtain L without forming Q.
+    """
+
+    h_aug = instance.h_train_aug
+    gram = (h_aug.T @ h_aug) / float(instance.n_train)
+    eigenvalues = np.linalg.eigvalsh(gram)
+    largest_from_data = float(np.max(eigenvalues))
+
+    mu = instance.lambda_reg
+    raw_l = largest_from_data + instance.lambda_reg
+    l_smooth = raw_l * 1.01
+    condition_number = l_smooth / mu
+
+    return {
+        "mu": mu,
+        "l_smooth": l_smooth,
+        "condition_number": condition_number,
+        "raw_largest_eigenvalue_estimate": raw_l,
+    }
+
+
+def reference_weights_from_dual_for_metrics(instance):
+    """Reference solution used only to measure gaps and relative errors.
+
+    The algorithms are still our hand-written Heavy Ball and Nesterov methods.
+    This solve is not used by the algorithms; it is only a diagnostic reference.
+    It uses the equivalent small system based on H^T H, because hidden_width is
+    10000 and forming the full Q would be wasteful.
+    """
+
+    h_aug = instance.h_train_aug
+    n_samples = instance.n_train
+    dual_matrix = h_aug.T @ h_aug
+    dual_matrix = dual_matrix + (
+        float(n_samples) * instance.lambda_reg * np.eye(n_samples)
+    )
+    solved = np.linalg.solve(dual_matrix, h_aug.T)
+    weights = instance.y_train @ solved
+    return weights
+
+
+def elm_gradient_and_objective_from_h(weights, instance):
+    h_aug = instance.h_train_aug
+    residual = weights @ h_aug - instance.y_train
+    grad = (residual @ h_aug.T) / float(instance.n_train)
+    grad = grad + instance.lambda_reg * weights
+
+    loss = 0.5 * np.sum(residual * residual) / float(instance.n_train)
+    regularization = 0.5 * instance.lambda_reg * np.sum(weights * weights)
+    objective = float(loss + regularization)
+    return grad, objective
+
+
+def new_rho_history():
+    return {
+        "iteration": [],
+        "grad_norm": [],
+        "objective_value": [],
+        "objective_gap_to_reference": [],
+        "relative_error_to_reference": [],
+    }
+
+
+def record_rho_history(
+    history,
+    iteration,
+    weights,
+    grad_norm,
+    objective,
+    reference_weights,
+    reference_objective,
+):
+    history["iteration"].append(iteration)
+    history["grad_norm"].append(grad_norm)
+    history["objective_value"].append(objective)
+    history["objective_gap_to_reference"].append(
+        max(0.0, objective - reference_objective)
+    )
+    history["relative_error_to_reference"].append(
+        relative_error(weights, reference_weights)
+    )
+
+
+def heavy_ball_from_h_with_history(
+    instance,
+    w0,
+    mu,
+    l_smooth,
+    tol,
+    max_iter,
+    reference_weights,
+    reference_objective,
+    record_every,
+):
+    sqrt_l = np.sqrt(l_smooth)
+    sqrt_mu = np.sqrt(mu)
+    alpha = 4.0 / (sqrt_l + sqrt_mu) ** 2
+    beta = ((sqrt_l - sqrt_mu) / (sqrt_l + sqrt_mu)) ** 2
+
+    weights = np.array(w0, dtype=float, copy=True)
+    previous_weights = weights.copy()
+    history = new_rho_history()
+    converged = False
+    final_grad_norm = np.inf
+    final_objective = np.inf
+    iterations = 0
+
+    start = perf_counter()
+    for iteration in range(max_iter + 1):
+        grad, objective = elm_gradient_and_objective_from_h(weights, instance)
+        final_grad_norm = float(np.sqrt(np.sum(grad * grad)))
+        final_objective = objective
+
+        if iteration % record_every == 0:
+            record_rho_history(
+                history,
+                iteration,
+                weights,
+                final_grad_norm,
+                final_objective,
+                reference_weights,
+                reference_objective,
+            )
+
+        if final_grad_norm <= tol:
+            converged = True
+            iterations = iteration
+            break
+
+        if iteration == max_iter:
+            iterations = iteration
+            break
+
+        next_weights = weights - alpha * grad
+        next_weights = next_weights + beta * (weights - previous_weights)
+        previous_weights = weights
+        weights = next_weights
+
+    elapsed = perf_counter() - start
+
+    if history["iteration"][-1] != iterations:
+        record_rho_history(
+            history,
+            iterations,
+            weights,
+            final_grad_norm,
+            final_objective,
+            reference_weights,
+            reference_objective,
+        )
+
+    return OptimizationResult(
+        method="Heavy Ball",
+        weights=weights,
+        iterations=iterations,
+        converged=converged,
+        elapsed_seconds=elapsed,
+        final_gradient_norm=final_grad_norm,
+        alpha=alpha,
+        beta=beta,
+        history=history,
+    )
+
+
+def nesterov_from_h_with_history(
+    instance,
+    w0,
+    mu,
+    l_smooth,
+    tol,
+    max_iter,
+    reference_weights,
+    reference_objective,
+    record_every,
+):
+    alpha = 1.0 / l_smooth
+    beta = (np.sqrt(l_smooth) - np.sqrt(mu)) / (
+        np.sqrt(l_smooth) + np.sqrt(mu)
+    )
+
+    weights = np.array(w0, dtype=float, copy=True)
+    previous_weights = weights.copy()
+    final_weights = weights.copy()
+    history = new_rho_history()
+    converged = False
+    final_grad_norm = np.inf
+    final_objective = np.inf
+    iterations = 0
+
+    start = perf_counter()
+    for iteration in range(max_iter + 1):
+        evaluation_point = weights + beta * (weights - previous_weights)
+        grad, objective = elm_gradient_and_objective_from_h(
+            evaluation_point,
+            instance,
+        )
+        final_grad_norm = float(np.sqrt(np.sum(grad * grad)))
+        final_objective = objective
+        final_weights = evaluation_point
+
+        if iteration % record_every == 0:
+            record_rho_history(
+                history,
+                iteration,
+                evaluation_point,
+                final_grad_norm,
+                final_objective,
+                reference_weights,
+                reference_objective,
+            )
+
+        if final_grad_norm <= tol:
+            converged = True
+            iterations = iteration
+            break
+
+        if iteration == max_iter:
+            iterations = iteration
+            break
+
+        next_weights = evaluation_point - alpha * grad
+        previous_weights = weights
+        weights = next_weights
+
+    elapsed = perf_counter() - start
+
+    if history["iteration"][-1] != iterations:
+        record_rho_history(
+            history,
+            iterations,
+            final_weights,
+            final_grad_norm,
+            final_objective,
+            reference_weights,
+            reference_objective,
+        )
+
+    return OptimizationResult(
+        method="Nesterov",
+        weights=final_weights,
+        iterations=iterations,
+        converged=converged,
+        elapsed_seconds=elapsed,
+        final_gradient_norm=final_grad_norm,
+        alpha=alpha,
+        beta=beta,
+        history=history,
+    )
+
+
+def make_rho_conditioning_summary_row(
+    rho,
+    epsilon,
+    instance,
+    spectral,
+    result,
+    reference_weights,
+    reference_objective,
+    objective_fn,
+):
+    final_objective = objective_fn(result.weights)
+    train_scores = result.weights @ instance.h_train_aug
+    test_scores = result.weights @ instance.h_test_aug
+    initial_gradient_norm = ""
+    if "grad_norm" in result.history and len(result.history["grad_norm"]) > 0:
+        initial_gradient_norm = result.history["grad_norm"][0]
+
+    return {
+        "rho": rho,
+        "method": result.method,
+        "epsilon": epsilon,
+        "output_weight_count": output_weight_count(instance),
+        "hidden_width": instance.hidden_width,
+        "q_dimension": instance.q.shape[0],
+        "n_train": instance.n_train,
+        "n_test": instance.n_test,
+        "n_features": instance.n_features,
+        "n_classes": instance.n_classes,
+        "lambda_reg": instance.lambda_reg,
+        "estimated_L": spectral.l_smooth,
+        "mu": spectral.mu,
+        "condition_number": spectral.condition_estimate,
+        "alpha": result.alpha,
+        "beta": result.beta,
+        "converged": result.converged,
+        "iterations": result.iterations,
+        "time_seconds": result.elapsed_seconds,
+        "initial_gradient_norm": initial_gradient_norm,
+        "final_gradient_norm": result.final_gradient_norm,
+        "objective_value": final_objective,
+        "objective_gap_to_reference": max(
+            0.0,
+            final_objective - reference_objective,
+        ),
+        "relative_error_to_reference": relative_error(
+            result.weights,
+            reference_weights,
+        ),
+        "train_accuracy": classification_accuracy(
+            train_scores,
+            instance.train_labels,
+        ),
+        "test_accuracy": classification_accuracy(
+            test_scores,
+            instance.test_labels,
+        ),
+    }
+
+
+def make_rho_conditioning_history_rows(
+    rho,
+    epsilon,
+    output_weights,
+    condition_number,
+    result,
+    reference_objective,
+):
+    rows = []
+    history = result.history
+    denominator = max(1.0, abs(reference_objective))
+
+    for index in range(len(history["iteration"])):
+        objective_gap = history["objective"][index] - reference_objective
+        objective_gap = max(0.0, objective_gap)
+        rows.append(
+            {
+                "rho": rho,
+                "method": result.method,
+                "epsilon": epsilon,
+                "output_weight_count": output_weights,
+                "condition_number": condition_number,
+                "iteration": history["iteration"][index],
+                "relative_gap": objective_gap / denominator,
+                "grad_norm": history["grad_norm"][index],
+                "objective_value": history["objective"][index],
+                "objective_gap_to_reference": objective_gap,
+                "relative_error_to_reference": history["relative_error"][index],
+            }
+        )
+
+    return rows
+
+
 def create_dimension_scaling_scenario(config, seed):
     scenario = create_synthetic_analysis_scenario(
         "well",
@@ -1210,17 +2132,17 @@ def create_dimension_scaling_scenario(config, seed):
         config,
         seed,
     )
-    total_weights = config["n_features"] * scenario["instance"].hidden_width
+    total_weights = output_weight_count(scenario["instance"])
     scenario["dataset_name"] = "dimension_scaling"
-    scenario["scenario_type"] = "weights_" + str(total_weights)
+    scenario["scenario_type"] = "output_weights_" + str(total_weights)
     scenario["description"] = (
         "Well-conditioned scaling case with "
         + str(config["n_train"])
         + " training samples and "
         + str(total_weights)
-        + " hidden-layer weights."
+        + " trainable output weights."
     )
-    scenario["sweep_parameter"] = "total_hidden_weights"
+    scenario["sweep_parameter"] = "total_output_weights"
     scenario["sweep_value"] = total_weights
     return scenario
 
@@ -1251,7 +2173,7 @@ def prepare_analysis_context(scenario, seed):
     reference_weights = numpy_reference.weights
     reference_objective = objective_fn(reference_weights)
     ldlt_result = ldlt_solve_weights(q, c)
-    numpy_cholesky = numpy_cholesky_reference(q, c)
+    scipy_ldlt = scipy_ldlt_reference(q, c)
 
     context = {
         "scenario": scenario,
@@ -1259,7 +2181,7 @@ def prepare_analysis_context(scenario, seed):
         "spectral": spectral,
         "objective_fn": objective_fn,
         "numpy_reference": numpy_reference,
-        "numpy_cholesky": numpy_cholesky,
+        "scipy_ldlt": scipy_ldlt,
         "reference_weights": reference_weights,
         "reference_objective": reference_objective,
         "ldlt_result": ldlt_result,
@@ -1392,7 +2314,7 @@ def run_dimension_scaling_analysis(
             context,
             context["ldlt_result"],
             epsilon,
-            "total_hidden_weights",
+            "total_output_weights",
             sweep_value,
         )
 
@@ -1410,7 +2332,7 @@ def run_dimension_scaling_analysis(
             context,
             hb_result,
             epsilon,
-            "total_hidden_weights",
+            "total_output_weights",
             sweep_value,
         )
         append_analysis_result(
@@ -1420,7 +2342,7 @@ def run_dimension_scaling_analysis(
             context,
             nag_result,
             epsilon,
-            "total_hidden_weights",
+            "total_output_weights",
             sweep_value,
         )
 
@@ -1726,7 +2648,7 @@ def append_builtin_comparison_results(
         pytorch_hb_result,
         pytorch_nag_result,
         context["numpy_reference"],
-        context["numpy_cholesky"],
+        context["scipy_ldlt"],
     ]
 
     for result in results:
@@ -1795,7 +2717,7 @@ def make_detailed_analysis_row(
     grad = gradient(result.weights, instance.q, instance.c)
     final_gradient_norm = float(np.sqrt(np.sum(grad * grad)))
 
-    total_hidden_weights = instance.n_features * instance.hidden_width
+    total_output_weights = output_weight_count(instance)
 
     row = {
         "analysis_group": analysis_group,
@@ -1834,7 +2756,7 @@ def make_detailed_analysis_row(
         "n_features": instance.n_features,
         "n_classes": instance.n_classes,
         "hidden_width": instance.hidden_width,
-        "total_hidden_weights": total_hidden_weights,
+        "total_output_weights": total_output_weights,
         "lambda_reg": instance.lambda_reg,
         "estimated_L": spectral.l_smooth,
         "mu": spectral.mu,
@@ -1881,7 +2803,7 @@ def make_detailed_history_rows(
 def method_type_for_method(method):
     if method in ["LDLT", "Heavy Ball", "Nesterov", "Nesterov variable beta"]:
         return "scratch"
-    if method in ["NumPy solve", "NumPy Cholesky"]:
+    if method in ["NumPy solve", "SciPy LDLT"]:
         return "built-in benchmark"
     if method in ["PyTorch SGD momentum", "PyTorch SGD Nesterov"]:
         return "library optimizer"
@@ -2073,14 +2995,16 @@ def requested_fixed_dimension_config(suite):
             "n_train": 1000,
             "n_test": 350,
             "n_features": 20,
-            "total_hidden_weights": 10000,
+            "n_classes": 20,
+            "target_output_weights": 10000,
         }
 
     return {
         "n_train": 260,
         "n_test": 100,
         "n_features": 10,
-        "total_hidden_weights": 600,
+        "n_classes": 6,
+        "target_output_weights": 600,
     }
 
 
@@ -2090,11 +3014,13 @@ def requested_dimension_configs(suite):
         n_train = 1000
         n_test = 350
         n_features = 100
+        n_classes = 100
     else:
         total_weights = [600, 900, 1200]
         n_train = 260
         n_test = 100
         n_features = 10
+        n_classes = 6
 
     configs = []
     for value in total_weights:
@@ -2103,10 +3029,137 @@ def requested_dimension_configs(suite):
                 "n_train": n_train,
                 "n_test": n_test,
                 "n_features": n_features,
-                "total_hidden_weights": value,
+                "n_classes": n_classes,
+                "target_output_weights": value,
             }
         )
     return configs
+
+
+def handwritten_dimension_scaling_configs():
+    """Dimensions for the requested handwritten-only scaling comparison."""
+
+    configs = []
+    total_weights = [10000, 50000, 100000]
+    n_train = 1000
+    n_test = 350
+    n_features = 100
+    n_classes = 100
+
+    for value in total_weights:
+        configs.append(
+            {
+                "n_train": n_train,
+                "n_test": n_test,
+                "n_features": n_features,
+                "n_classes": n_classes,
+                "target_output_weights": value,
+            }
+        )
+
+    return configs
+
+
+def run_handwritten_dimension_scaling(seed, epsilon, max_iter, record_every):
+    """Compare only our LDLT, Heavy Ball, and Nesterov as size increases.
+
+    No built-in solver is used in this experiment. The largest eigenvalue used
+    by the iterative methods is estimated by our Power Method through
+    estimate_spectral_bounds.
+    """
+
+    rows = []
+    configs = handwritten_dimension_scaling_configs()
+
+    for index in range(len(configs)):
+        config = configs[index]
+        target_weights = config["target_output_weights"]
+        print(
+            "Running handwritten dimension scaling: output weights="
+            + str(target_weights)
+        )
+
+        scenario = create_synthetic_analysis_scenario(
+            "well",
+            0.1,
+            config,
+            seed + index,
+        )
+        instance = scenario["instance"]
+
+        spectral = estimate_spectral_bounds(
+            instance.q,
+            instance.lambda_reg,
+            seed=seed + index,
+            l_safety_factor=1.01,
+        )
+
+        ldlt_result = ldlt_solve_weights(instance.q, instance.c)
+        w0 = np.zeros_like(instance.c)
+
+        hb_result = heavy_ball(
+            instance.q,
+            instance.c,
+            w0,
+            mu=spectral.mu,
+            l_smooth=spectral.l_smooth,
+            tol=epsilon,
+            max_iter=max_iter,
+            objective_fn=None,
+            reference_weights=None,
+            record_every=record_every,
+        )
+
+        nag_result = nesterov_accelerated_gradient(
+            instance.q,
+            instance.c,
+            w0,
+            mu=spectral.mu,
+            l_smooth=spectral.l_smooth,
+            tol=epsilon,
+            max_iter=max_iter,
+            objective_fn=None,
+            reference_weights=None,
+            record_every=record_every,
+        )
+
+        results = [ldlt_result, hb_result, nag_result]
+        for result in results:
+            rows.append(
+                make_handwritten_dimension_scaling_row(
+                    result,
+                    instance,
+                    epsilon,
+                )
+            )
+
+    return rows
+
+
+def make_handwritten_dimension_scaling_row(result, instance, epsilon):
+    return {
+        "algorithm": result.method,
+        "output_weight_count": output_weight_count(instance),
+        "hidden_width": instance.hidden_width,
+        "q_dimension": instance.q.shape[0],
+        "n_train": instance.n_train,
+        "n_test": instance.n_test,
+        "n_features": instance.n_features,
+        "n_classes": instance.n_classes,
+        "epsilon": epsilon,
+        "converged": result.converged,
+        "iterations": result.iterations,
+        "computational_time_seconds": result.elapsed_seconds,
+        "final_gradient_norm": result.final_gradient_norm,
+        "alpha": value_or_empty(result.alpha),
+        "beta": value_or_empty(result.beta),
+    }
+
+
+def value_or_empty(value):
+    if value is None:
+        return ""
+    return value
 
 
 def requested_all_rho_values():
@@ -2143,6 +3196,7 @@ def run_requested_dimension_scaling_times(
             seed + index,
         )
         context = prepare_analysis_context(scenario, seed + index)
+        dimensionality = output_weight_count(context["instance"])
         hb_result, nag_result = run_scratch_iterative_methods(
             context,
             epsilon,
@@ -2155,7 +3209,7 @@ def run_requested_dimension_scaling_times(
             rows.append(
                 {
                     "algorithm": result.method,
-                    "dimensionality": config["total_hidden_weights"],
+                    "dimensionality": dimensionality,
                     "computational_time": result.elapsed_seconds,
                 }
             )
@@ -2183,6 +3237,7 @@ def run_requested_conditioning_effect(
             seed + index,
         )
         context = prepare_analysis_context(scenario, seed + index)
+        dimensionality = output_weight_count(context["instance"])
         hb_result, nag_result = run_scratch_iterative_methods(
             context,
             epsilon,
@@ -2196,7 +3251,7 @@ def run_requested_conditioning_effect(
                 {
                     "algorithm": result.method,
                     "rho": rho,
-                    "dimensionality": fixed_config["total_hidden_weights"],
+                    "dimensionality": dimensionality,
                     "computational_time": result.elapsed_seconds,
                 }
             )
@@ -2207,7 +3262,7 @@ def run_requested_conditioning_effect(
                 hb_result,
                 "rho",
                 rho,
-                fixed_config["total_hidden_weights"],
+                dimensionality,
                 epsilon,
             )
         )
@@ -2217,7 +3272,7 @@ def run_requested_conditioning_effect(
                 nag_result,
                 "rho",
                 rho,
-                fixed_config["total_hidden_weights"],
+                dimensionality,
                 epsilon,
             )
         )
@@ -2245,6 +3300,7 @@ def run_requested_sparsity_effect(
             seed + index,
         )
         context = prepare_analysis_context(scenario, seed + index)
+        dimensionality = output_weight_count(context["instance"])
         hb_result, nag_result = run_scratch_iterative_methods(
             context,
             epsilon,
@@ -2258,7 +3314,7 @@ def run_requested_sparsity_effect(
                 {
                     "algorithm": result.method,
                     "sparseness_percentage": sparsity,
-                    "dimensionality": fixed_config["total_hidden_weights"],
+                    "dimensionality": dimensionality,
                     "computational_time": result.elapsed_seconds,
                 }
             )
@@ -2269,7 +3325,7 @@ def run_requested_sparsity_effect(
                 hb_result,
                 "sparseness_percentage",
                 sparsity,
-                fixed_config["total_hidden_weights"],
+                dimensionality,
                 epsilon,
             )
         )
@@ -2279,7 +3335,7 @@ def run_requested_sparsity_effect(
                 nag_result,
                 "sparseness_percentage",
                 sparsity,
-                fixed_config["total_hidden_weights"],
+                dimensionality,
                 epsilon,
             )
         )
@@ -2315,6 +3371,7 @@ def run_requested_dimension_parameter_times(
                 scenario,
                 seed + 100 * config_index + value_index,
             )
+            dimensionality = output_weight_count(context["instance"])
             hb_result, nag_result = run_scratch_iterative_methods(
                 context,
                 epsilon,
@@ -2347,7 +3404,7 @@ def run_requested_dimension_parameter_times(
             for result in results:
                 row = {
                     "algorithm": result.method,
-                    "dimensionality": config["total_hidden_weights"],
+                    "dimensionality": dimensionality,
                     "computational_time": result.elapsed_seconds,
                 }
                 if parameter_name == "rho":
@@ -2379,6 +3436,7 @@ def run_requested_library_plots(
             seed + index,
         )
         context = prepare_analysis_context(scenario, seed + index)
+        dimensionality = output_weight_count(context["instance"])
         hb_result, nag_result = run_scratch_iterative_methods(
             context,
             epsilon,
@@ -2399,7 +3457,7 @@ def run_requested_library_plots(
             pytorch_hb,
             "rho",
             rho,
-            fixed_config["total_hidden_weights"],
+            dimensionality,
             epsilon,
             figures_dir / (
                 "requested_library_rho_"
@@ -2413,7 +3471,7 @@ def run_requested_library_plots(
             pytorch_nag,
             "rho",
             rho,
-            fixed_config["total_hidden_weights"],
+            dimensionality,
             epsilon,
             figures_dir / (
                 "requested_library_rho_"
@@ -2431,6 +3489,7 @@ def run_requested_library_plots(
             seed + 100 + index,
         )
         context = prepare_analysis_context(scenario, seed + 100 + index)
+        dimensionality = output_weight_count(context["instance"])
         hb_result, nag_result = run_scratch_iterative_methods(
             context,
             epsilon,
@@ -2451,7 +3510,7 @@ def run_requested_library_plots(
             pytorch_hb,
             "sparseness_percentage",
             sparsity,
-            fixed_config["total_hidden_weights"],
+            dimensionality,
             epsilon,
             figures_dir / (
                 "requested_library_sparsity_"
@@ -2465,7 +3524,7 @@ def run_requested_library_plots(
             pytorch_nag,
             "sparseness_percentage",
             sparsity,
-            fixed_config["total_hidden_weights"],
+            dimensionality,
             epsilon,
             figures_dir / (
                 "requested_library_sparsity_"
@@ -2487,17 +3546,18 @@ def run_requested_ldlt_builtin_times(dimension_configs, seed):
             seed + index,
         )
         context = prepare_analysis_context(scenario, seed + index)
+        dimensionality = output_weight_count(context["instance"])
         results = [
             context["ldlt_result"],
             context["numpy_reference"],
-            context["numpy_cholesky"],
+            context["scipy_ldlt"],
         ]
 
         for result in results:
             rows.append(
                 {
                     "algorithm": result.method,
-                    "dimensionality": config["total_hidden_weights"],
+                    "dimensionality": dimensionality,
                     "computational_time": result.elapsed_seconds,
                     "relative_error_to_our_ldlt": relative_error(
                         result.weights,
@@ -2627,6 +3687,973 @@ def run_requested_real_dataset_analysis(
     return rows
 
 
+class RealComparisonInstance:
+    """Small object for the large real-data ELM comparison.
+
+    We store H directly and avoid building Q. This is important when the hidden
+    layer has 50000 or 100000 weights, because Q would be unnecessarily large.
+    """
+
+    def __init__(
+        self,
+        dataset_name,
+        y_train,
+        train_labels,
+        h_train_aug,
+        lambda_reg,
+        hidden_width,
+        n_features,
+    ):
+        self.dataset_name = dataset_name
+        self.y_train = y_train
+        self.train_labels = train_labels
+        self.h_train_aug = h_train_aug
+        self.lambda_reg = lambda_reg
+        self.hidden_width = hidden_width
+        self.n_features = n_features
+        self.n_train = h_train_aug.shape[1]
+        self.n_classes = y_train.shape[0]
+
+
+def parse_int_list(text):
+    values = []
+    parts = str(text).split(",")
+    for part in parts:
+        stripped = part.strip()
+        if stripped != "":
+            values.append(int(stripped))
+    return values
+
+
+def parse_float_list(text):
+    values = []
+    parts = str(text).split(",")
+    for part in parts:
+        stripped = part.strip()
+        if stripped != "":
+            values.append(float(stripped))
+    return values
+
+
+def run_real_pytorch_same_initialization_comparison(
+    output_weight_values,
+    epsilon_values,
+    max_iter,
+    record_every,
+    seed,
+):
+    """Compare our real-data optimizers with PyTorch from the same W0.
+
+    The CSV contains every combination:
+    dataset x output-weight count x epsilon x optimizer.
+    """
+
+    check_sklearn_available()
+
+    rows = []
+    dataset_names = ["wine", "digits"]
+
+    for dataset_index in range(len(dataset_names)):
+        dataset_name = dataset_names[dataset_index]
+
+        for weight_index in range(len(output_weight_values)):
+            output_weight_count_value = output_weight_values[weight_index]
+            instance = create_real_comparison_instance(
+                dataset_name,
+                output_weight_count_value,
+                seed + 100 * dataset_index + weight_index,
+            )
+            spectral = estimate_real_comparison_spectral_bounds(instance)
+            reference_weights = reference_weights_for_real_gap(instance)
+            reference_objective = objective_value_from_h(
+                reference_weights,
+                instance,
+            )
+
+            # Same W0 for all epsilons and all four optimizers for this
+            # specific pair (dataset, hidden size).
+            rng = np.random.default_rng(seed + 1000 + 100 * dataset_index + weight_index)
+            w0 = 0.01 * rng.normal(
+                size=(instance.n_classes, instance.hidden_width + 1)
+            )
+            initial_grad = elm_gradient_from_h(w0, instance)
+            initial_grad_norm = float(np.sqrt(np.sum(initial_grad * initial_grad)))
+
+            for epsilon in epsilon_values:
+                hb_result = heavy_ball_from_h(
+                    instance,
+                    w0,
+                    spectral["mu"],
+                    spectral["l_smooth"],
+                    epsilon,
+                    max_iter,
+                )
+
+                nag_result = nesterov_from_h(
+                    instance,
+                    w0,
+                    spectral["mu"],
+                    spectral["l_smooth"],
+                    epsilon,
+                    max_iter,
+                )
+
+                pytorch_hb = pytorch_from_h(
+                    instance,
+                    w0,
+                    "PyTorch SGD momentum",
+                    hb_result.alpha,
+                    hb_result.beta,
+                    False,
+                    epsilon,
+                    max_iter,
+                )
+
+                pytorch_nag = pytorch_from_h(
+                    instance,
+                    w0,
+                    "PyTorch SGD Nesterov",
+                    nag_result.alpha,
+                    nag_result.beta,
+                    True,
+                    epsilon,
+                    max_iter,
+                )
+
+                results = [hb_result, nag_result, pytorch_hb, pytorch_nag]
+                for result in results:
+                    rows.append(
+                        make_real_pytorch_comparison_row(
+                            result,
+                            dataset_name,
+                            epsilon,
+                            initial_grad_norm,
+                            reference_objective,
+                            instance,
+                        )
+                    )
+
+    return rows
+
+
+def create_real_comparison_instance(dataset_name, target_output_weights, seed):
+    """Create Wine or Digits ELM with about target_output_weights output weights."""
+
+    if dataset_name == "wine":
+        data = load_wine()
+        test_size = 0.30
+        activation = "tanh"
+        hidden_scale = 1.0
+    elif dataset_name == "digits":
+        data = load_digits()
+        test_size = 0.25
+        activation = "tanh"
+        hidden_scale = 0.8
+    else:
+        raise ValueError("Unknown real dataset: " + dataset_name)
+
+    x = data.data.astype(float)
+    labels = data.target.astype(int)
+    n_features = x.shape[1]
+    n_classes = int(np.max(labels)) + 1
+    hidden_width = hidden_width_from_output_weights(
+        target_output_weights,
+        n_classes,
+    )
+
+    x_train, x_test, train_labels, test_labels = train_test_split(
+        x,
+        labels,
+        test_size=test_size,
+        random_state=seed,
+        stratify=labels,
+    )
+
+    x_train = x_train.T
+    x_test = x_test.T
+    x_train, x_test = standardize_train_test(x_train, x_test)
+
+    y_train = one_hot(train_labels, n_classes)
+
+    rng = np.random.default_rng(seed + 10000)
+    hidden_weights = rng.normal(size=(hidden_width, n_features))
+    hidden_weights = hidden_scale * hidden_weights / np.sqrt(float(n_features))
+    hidden_bias = rng.uniform(-1.0, 1.0, size=hidden_width)
+
+    h_train = build_hidden_matrix(
+        x_train,
+        hidden_weights,
+        hidden_bias,
+        activation,
+    )
+    h_train_aug = augment_hidden_matrix(h_train)
+
+    instance = RealComparisonInstance(
+        dataset_name,
+        y_train,
+        train_labels,
+        h_train_aug,
+        1e-2,
+        hidden_width,
+        n_features,
+    )
+    return instance
+
+
+def reference_weights_for_real_gap(instance):
+    """Compute a trusted reference solution for objective gaps.
+
+    If the number of hidden units is larger than the number of samples, the
+    dual ridge formula is much faster than solving the big normal system. This
+    is used only to evaluate the gap in the CSV.
+    """
+
+    h_aug = instance.h_train_aug
+    y = instance.y_train
+    n_samples = instance.n_train
+
+    gamma = n_samples * instance.lambda_reg
+    kernel = h_aug.T @ h_aug
+    kernel = kernel + gamma * np.eye(n_samples)
+    dual_solution = np.linalg.solve(kernel, h_aug.T)
+    weights = y @ dual_solution
+    return weights
+
+
+def make_real_pytorch_comparison_row(
+    result,
+    dataset_name,
+    epsilon,
+    initial_grad_norm,
+    reference_objective,
+    instance,
+):
+    objective = objective_value_from_h(result.weights, instance)
+    absolute_gap = max(0.0, objective - reference_objective)
+    relative_gap = absolute_gap / max(1.0, abs(reference_objective))
+
+    alpha = ""
+    beta = ""
+    if result.alpha is not None:
+        alpha = result.alpha
+    if result.beta is not None:
+        beta = result.beta
+
+    row = {
+        "algorithm": result.method,
+        "dataset": dataset_name,
+        "epsilon": epsilon,
+        "initial_gradient_norm": initial_grad_norm,
+        "final_gradient_norm": result.final_gradient_norm,
+        "absolute_gap": absolute_gap,
+        "relative_gap": relative_gap,
+        "computational_time_seconds": result.elapsed_seconds,
+        "number_of_iterations": result.iterations,
+        "hidden_layer_size": instance.hidden_width,
+        "alpha": alpha,
+        "beta": beta,
+    }
+    return row
+
+
+def plot_real_pytorch_time_vs_hidden_size(rows, figures_dir, epsilon):
+    """Plot computational time against hidden size for Wine and Digits."""
+
+    selected_rows = []
+    for row in rows:
+        if abs(float(row["epsilon"]) - float(epsilon)) <= 1e-15:
+            selected_rows.append(row)
+
+    if len(selected_rows) == 0:
+        return
+
+    dataset_names = ["wine", "digits"]
+    methods = [
+        "Heavy Ball",
+        "Nesterov",
+        "PyTorch SGD momentum",
+        "PyTorch SGD Nesterov",
+    ]
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
+
+    for dataset_index in range(len(dataset_names)):
+        dataset_name = dataset_names[dataset_index]
+        axis = axes[dataset_index]
+
+        dataset_rows = []
+        for row in selected_rows:
+            if row["dataset"] == dataset_name:
+                dataset_rows.append(row)
+
+        hidden_sizes = []
+        for row in dataset_rows:
+            hidden_size = int(float(row["hidden_layer_size"]))
+            if hidden_size not in hidden_sizes:
+                hidden_sizes.append(hidden_size)
+        hidden_sizes.sort()
+
+        for method in methods:
+            times = []
+            for hidden_size in hidden_sizes:
+                value = np.nan
+                for row in dataset_rows:
+                    same_method = row["algorithm"] == method
+                    same_size = int(float(row["hidden_layer_size"])) == hidden_size
+                    if same_method and same_size:
+                        value = float(row["computational_time_seconds"])
+                times.append(value)
+
+            style = plot_style_for_method(method)
+            axis.plot(
+                hidden_sizes,
+                times,
+                label=short_label_for_real_pytorch_method(method),
+                color=style["color"],
+                linestyle=style["linestyle"],
+                marker=style["marker"],
+                linewidth=2.4,
+            )
+
+        axis.set_xlabel("Hidden layer size")
+        axis.set_ylabel("Computational time (seconds)")
+        axis.set_title(dataset_name)
+        axis.grid(True, alpha=0.3)
+        axis.legend(fontsize=8)
+
+    title = "Computational Time vs Hidden Layer Size"
+    subtitle = "epsilon=" + format_epsilon_label(epsilon)
+    fig.suptitle(title + "\n" + subtitle)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.88])
+
+    filename = "real_pytorch_time_vs_hidden_size_epsilon_"
+    filename = filename + make_safe_filename(format_epsilon_label(epsilon))
+    filename = filename + ".png"
+    fig.savefig(figures_dir / filename, dpi=160)
+    plt.close(fig)
+
+
+def short_label_for_real_pytorch_method(method):
+    if method == "PyTorch SGD momentum":
+        return "PyTorch HB"
+    if method == "PyTorch SGD Nesterov":
+        return "PyTorch Nesterov"
+    return method
+
+
+def plot_real_pytorch_time_vs_epsilon_extreme_hidden_sizes(rows, figures_dir):
+    """Plot time versus epsilon separating the two extreme hidden sizes."""
+
+    if len(rows) == 0:
+        return
+
+    dataset_names = ["wine", "digits"]
+    methods = [
+        "Heavy Ball",
+        "Nesterov",
+        "PyTorch SGD momentum",
+        "PyTorch SGD Nesterov",
+    ]
+
+    plot_cases = []
+
+    for dataset_index in range(len(dataset_names)):
+        dataset_name = dataset_names[dataset_index]
+        dataset_rows = []
+        for row in rows:
+            if row["dataset"] == dataset_name:
+                dataset_rows.append(row)
+
+        hidden_sizes = []
+        for row in dataset_rows:
+            hidden_size = int(float(row["hidden_layer_size"]))
+            if hidden_size not in hidden_sizes:
+                hidden_sizes.append(hidden_size)
+        hidden_sizes.sort()
+
+        if len(hidden_sizes) == 0:
+            continue
+
+        selected_sizes = [hidden_sizes[0]]
+        if hidden_sizes[-1] != hidden_sizes[0]:
+            selected_sizes.append(hidden_sizes[-1])
+
+        for hidden_size in selected_sizes:
+            plot_cases.append(
+                {
+                    "dataset_name": dataset_name,
+                    "hidden_size": hidden_size,
+                    "rows": dataset_rows,
+                }
+            )
+
+    if len(plot_cases) == 0:
+        return
+
+    fig, axes = plt.subplots(1, len(plot_cases), figsize=(19, 4.8), sharey=False)
+    if len(plot_cases) == 1:
+        axes = [axes]
+
+    for plot_index in range(len(plot_cases)):
+        plot_case = plot_cases[plot_index]
+        axis = axes[plot_index]
+        dataset_name = plot_case["dataset_name"]
+        hidden_size = plot_case["hidden_size"]
+        dataset_rows = plot_case["rows"]
+
+        epsilons = []
+        for row in dataset_rows:
+            epsilon = float(row["epsilon"])
+            if epsilon not in epsilons:
+                epsilons.append(epsilon)
+        epsilons.sort(reverse=True)
+
+        for method in methods:
+            times = []
+            for epsilon in epsilons:
+                value = np.nan
+                for row in dataset_rows:
+                    same_method = row["algorithm"] == method
+                    same_size = int(float(row["hidden_layer_size"])) == hidden_size
+                    same_epsilon = abs(float(row["epsilon"]) - epsilon) <= 1e-15
+                    if same_method and same_size and same_epsilon:
+                        value = float(row["computational_time_seconds"])
+                times.append(value)
+
+            style = plot_style_for_method(method)
+            axis.plot(
+                epsilons,
+                times,
+                label=short_label_for_real_pytorch_method(method),
+                color=style["color"],
+                marker=style["marker"],
+                linestyle=style["linestyle"],
+                linewidth=2.2,
+            )
+
+        axis.set_xscale("log")
+        axis.invert_xaxis()
+        axis.set_xlabel("epsilon")
+        if plot_index == 0:
+            axis.set_ylabel("Computational time (seconds)")
+        axis.set_title(dataset_name + "\nhidden size = " + str(hidden_size))
+        axis.grid(True, which="both", alpha=0.3)
+        axis.legend(fontsize=7)
+
+    fig.suptitle(
+        "Computational Time vs Epsilon\nSeparate Panels for Smallest and Largest Hidden Layers",
+    )
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.88])
+    fig.savefig(
+        figures_dir / "real_pytorch_time_vs_epsilon_extreme_hidden_sizes.png",
+        dpi=160,
+    )
+    plt.close(fig)
+
+def run_ldlt_scipy_comparison(output_weight_values, seed):
+    """Compare our LDLT with SciPy LDLT on real and controlled cases."""
+
+    check_sklearn_available()
+    check_scipy_available()
+
+    rows = []
+    real_rows = run_real_ldlt_scipy_comparison(output_weight_values, seed)
+    known_rows = run_known_solution_ldlt_scipy_comparison(seed + 10000)
+    rows.extend(real_rows)
+    rows.extend(known_rows)
+    return rows
+
+
+def run_real_ldlt_scipy_comparison(output_weight_values, seed):
+    """Compare our LDLT with SciPy LDLT on Wine and Digits.
+
+    Only the smallest requested output-weight size is used here. Both methods
+    factorize the primal ELM matrix Q, whose size is hidden_width + 1 because
+    the augmented hidden matrix includes the output bias row.
+    """
+
+    rows = []
+    dataset_names = ["wine", "digits"]
+    output_weight_count_value = output_weight_values[0]
+
+    for dataset_index in range(len(dataset_names)):
+        dataset_name = dataset_names[dataset_index]
+
+        instance = create_real_comparison_instance(
+            dataset_name,
+            output_weight_count_value,
+            seed + 500 + 100 * dataset_index,
+        )
+
+        q, c = build_primal_elm_system(instance)
+
+        our_row, our_weights = solve_real_primal_with_our_ldlt(
+            instance,
+            q,
+            c,
+        )
+        rows.append(our_row)
+
+        scipy_row, scipy_weights = solve_real_primal_with_scipy_ldlt(
+            instance,
+            q,
+            c,
+            our_weights,
+        )
+        rows.append(scipy_row)
+
+    return rows
+
+
+def build_primal_elm_system(instance):
+    h_aug = instance.h_train_aug
+    q = (h_aug @ h_aug.T) / instance.n_train
+    q = q + instance.lambda_reg * np.eye(h_aug.shape[0])
+    c = (instance.y_train @ h_aug.T) / instance.n_train
+    return q, c
+
+
+def solve_real_primal_with_our_ldlt(instance, q, c):
+    start = perf_counter()
+    l_factor, d = ldlt_factorize(q)
+    weights = solve_with_ldlt(l_factor, d, c.T).T
+    elapsed = perf_counter() - start
+
+    minimum_value = objective_value_from_h(weights, instance)
+    residual = weights @ q - c
+    residual_norm = float(np.sqrt(np.sum(residual * residual)))
+
+    row = {
+        "dataset": instance.dataset_name,
+        "case_type": "real_primal",
+        "algorithm": "LDLT",
+        "hidden_layer_size": instance.hidden_width,
+        "output_weight_count": output_weight_count(instance),
+        "q_dimension": q.shape[0],
+        "minimum_value": minimum_value,
+        "computational_time_seconds": elapsed,
+        "residual_norm": residual_norm,
+        "absolute_error_to_known_optimum": "",
+        "relative_error_to_known_optimum": "",
+        "relative_difference_to_our_ldlt": 0.0,
+    }
+    return row, weights
+
+
+def solve_real_primal_with_scipy_ldlt(instance, q, c, our_weights):
+    start = perf_counter()
+    weights = solve_with_scipy_ldlt(q, c.T).T
+    elapsed = perf_counter() - start
+
+    minimum_value = objective_value_from_h(weights, instance)
+    residual = weights @ q - c
+    residual_norm = float(np.sqrt(np.sum(residual * residual)))
+
+    row = {
+        "dataset": instance.dataset_name,
+        "case_type": "real_primal",
+        "algorithm": "SciPy LDLT",
+        "hidden_layer_size": instance.hidden_width,
+        "output_weight_count": output_weight_count(instance),
+        "q_dimension": q.shape[0],
+        "minimum_value": minimum_value,
+        "computational_time_seconds": elapsed,
+        "residual_norm": residual_norm,
+        "absolute_error_to_known_optimum": "",
+        "relative_error_to_known_optimum": "",
+        "relative_difference_to_our_ldlt": relative_error(weights, our_weights),
+    }
+    return row, weights
+
+
+def run_known_solution_ldlt_scipy_comparison(seed):
+    """Synthetic primal ELM system where the exact optimum is known.
+
+    First we build an augmented hidden matrix H and the corresponding primal
+    matrix Q = H H^T / n + lambda I. Then we choose W_star and set C = W_star Q.
+    In this way the exact solution of W Q = C is W_star, so the test checks the
+    numerical accuracy of our LDLT against SciPy LDLT.
+    """
+
+    rng = np.random.default_rng(seed)
+    q_dimension = 160
+    n_outputs = 6
+    hidden_width = q_dimension - 1
+    n_samples = 4 * q_dimension
+    lambda_reg = 0.25
+
+    hidden_values = rng.normal(size=(hidden_width, n_samples))
+    bias_row = np.ones((1, n_samples))
+    h_aug = np.vstack([hidden_values, bias_row])
+
+    q = (h_aug @ h_aug.T) / float(n_samples)
+    q = q + lambda_reg * np.eye(q_dimension)
+    true_weights = rng.normal(size=(n_outputs, q_dimension))
+    c = true_weights @ q
+
+    our_result = ldlt_solve_weights(q, c)
+    scipy_result = scipy_ldlt_reference(q, c)
+
+    rows = []
+    rows.append(
+        make_known_solution_ldlt_row(
+            "LDLT",
+            our_result.weights,
+            q,
+            c,
+            true_weights,
+            our_result.elapsed_seconds,
+            hidden_width,
+            n_outputs,
+            our_result.weights,
+        )
+    )
+    rows.append(
+        make_known_solution_ldlt_row(
+            "SciPy LDLT",
+            scipy_result.weights,
+            q,
+            c,
+            true_weights,
+            scipy_result.elapsed_seconds,
+            hidden_width,
+            n_outputs,
+            our_result.weights,
+        )
+    )
+    return rows
+
+
+def make_known_solution_ldlt_row(
+    method,
+    weights,
+    q,
+    c,
+    true_weights,
+    elapsed,
+    hidden_width,
+    n_outputs,
+    our_weights,
+):
+    residual = weights @ q - c
+    residual_norm = float(np.sqrt(np.sum(residual * residual)))
+    difference = weights - true_weights
+    absolute_error = float(np.sqrt(np.sum(difference * difference)))
+    relative_known_error = relative_error(weights, true_weights)
+
+    minimum_value = quadratic_objective_value(weights, q, c)
+
+    return {
+        "dataset": "synthetic_known_optimum",
+        "case_type": "known_solution",
+        "algorithm": method,
+        "hidden_layer_size": hidden_width,
+        "output_weight_count": hidden_width * n_outputs,
+        "q_dimension": q.shape[0],
+        "minimum_value": minimum_value,
+        "computational_time_seconds": elapsed,
+        "residual_norm": residual_norm,
+        "absolute_error_to_known_optimum": absolute_error,
+        "relative_error_to_known_optimum": relative_known_error,
+        "relative_difference_to_our_ldlt": relative_error(weights, our_weights),
+    }
+
+
+def quadratic_objective_value(weights, q, c):
+    quadratic_part = 0.5 * np.sum((weights @ q) * weights)
+    linear_part = np.sum(c * weights)
+    return float(quadratic_part - linear_part)
+
+
+def plot_ldlt_scipy_time_bars(rows, figures_dir):
+    """Plot LDLT and SciPy LDLT runtime for each tested primal case."""
+
+    if len(rows) == 0:
+        return
+
+    methods = ["LDLT", "SciPy LDLT"]
+    case_names = []
+    case_labels = []
+
+    preferred_order = ["wine", "digits", "synthetic_known_optimum"]
+    for dataset_name in preferred_order:
+        for row in rows:
+            if row["dataset"] == dataset_name and dataset_name not in case_names:
+                case_names.append(dataset_name)
+                case_labels.append(label_for_ldlt_case(row))
+
+    x_values = np.arange(len(case_names), dtype=float)
+    bar_width = 0.34
+    fig, axis = plt.subplots(figsize=(9.5, 4.8))
+
+    for method_index in range(len(methods)):
+        method = methods[method_index]
+        times = []
+        for dataset_name in case_names:
+            value = np.nan
+            for row in rows:
+                if row["dataset"] == dataset_name and row["algorithm"] == method:
+                    value = max(float(row["computational_time_seconds"]), 1e-12)
+            times.append(value)
+
+        offset = (method_index - 0.5) * bar_width
+        axis.bar(
+            x_values + offset,
+            times,
+            width=bar_width,
+            label=method,
+            color=time_plot_color(method),
+        )
+
+    axis.set_yscale("log")
+    axis.set_xticks(x_values)
+    axis.set_xticklabels(case_labels)
+    axis.set_ylabel("Computational time (seconds, log scale)")
+    axis.set_title("Our LDLT vs SciPy LDLT Runtime")
+    axis.grid(True, axis="y", which="both", alpha=0.3)
+    axis.legend()
+
+    fig.tight_layout()
+    fig.savefig(figures_dir / "ldlt_scipy_time_comparison.png", dpi=160)
+    plt.close(fig)
+
+
+def label_for_ldlt_case(row):
+    if row["dataset"] == "wine":
+        return "Wine\nQ=" + str(row["q_dimension"])
+    if row["dataset"] == "digits":
+        return "Digits\nQ=" + str(row["q_dimension"])
+    return "Known optimum\nQ=" + str(row["q_dimension"])
+
+
+def plot_ldlt_known_solution_accuracy(rows, figures_dir):
+    """Plot accuracy on the synthetic known-optimum system."""
+
+    selected = []
+    for row in rows:
+        if row["case_type"] == "known_solution":
+            selected.append(row)
+
+    if len(selected) == 0:
+        return
+
+    methods = []
+    relative_errors = []
+    residual_norms = []
+    for row in selected:
+        methods.append(row["algorithm"])
+        relative_errors.append(max(float(row["relative_error_to_known_optimum"]), 1e-18))
+        residual_norms.append(max(float(row["residual_norm"]), 1e-18))
+
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2))
+
+    axes[0].bar(methods, relative_errors, color=["#4c78a8", "#e45756"])
+    axes[0].set_yscale("log")
+    axes[0].set_ylabel("Relative error to known optimum")
+    axes[0].set_title("Known W* Error")
+    axes[0].grid(True, axis="y", which="both", alpha=0.3)
+
+    axes[1].bar(methods, residual_norms, color=["#4c78a8", "#e45756"])
+    axes[1].set_yscale("log")
+    axes[1].set_ylabel("Residual norm ||WQ - C||")
+    axes[1].set_title("Optimality Residual")
+    axes[1].grid(True, axis="y", which="both", alpha=0.3)
+
+    fig.suptitle("LDLT Accuracy on Synthetic Known-Optimum System")
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.90])
+    fig.savefig(figures_dir / "ldlt_scipy_known_solution_accuracy.png", dpi=160)
+    plt.close(fig)
+
+
+def estimate_real_comparison_spectral_bounds(instance):
+    """Estimate L and mu using the smaller Gram matrix H^T H."""
+
+    h_aug = instance.h_train_aug
+    gram = (h_aug.T @ h_aug) / instance.n_train
+    eigenvalues = np.linalg.eigvalsh(gram)
+    raw_l = float(np.max(eigenvalues))
+    l_smooth = max(raw_l, instance.lambda_reg) * 1.01
+    return {
+        "mu": instance.lambda_reg,
+        "l_smooth": l_smooth,
+    }
+
+
+def objective_value_from_h(weights, instance):
+    return objective_value(
+        weights,
+        instance.h_train_aug,
+        instance.y_train,
+        instance.lambda_reg,
+    )
+
+
+def elm_gradient_from_h(weights, instance):
+    h_aug = instance.h_train_aug
+    residual = weights @ h_aug - instance.y_train
+    grad = (residual @ h_aug.T) / instance.n_train
+    grad = grad + instance.lambda_reg * weights
+    return grad
+
+
+def heavy_ball_from_h(instance, w0, mu, l_smooth, tol, max_iter):
+    sqrt_l = np.sqrt(l_smooth)
+    sqrt_mu = np.sqrt(mu)
+    alpha = 4.0 / (sqrt_l + sqrt_mu) ** 2
+    beta = ((sqrt_l - sqrt_mu) / (sqrt_l + sqrt_mu)) ** 2
+
+    weights = np.array(w0, dtype=float, copy=True)
+    previous_weights = weights.copy()
+    converged = False
+    final_grad_norm = np.inf
+    iterations = 0
+
+    start = perf_counter()
+    for iteration in range(max_iter + 1):
+        grad = elm_gradient_from_h(weights, instance)
+        final_grad_norm = float(np.sqrt(np.sum(grad * grad)))
+
+        if final_grad_norm <= tol:
+            converged = True
+            iterations = iteration
+            break
+
+        if iteration == max_iter:
+            iterations = iteration
+            break
+
+        next_weights = weights - alpha * grad
+        next_weights = next_weights + beta * (weights - previous_weights)
+        previous_weights = weights
+        weights = next_weights
+
+    elapsed = perf_counter() - start
+
+    return OptimizationResult(
+        method="Heavy Ball",
+        weights=weights,
+        iterations=iterations,
+        converged=converged,
+        elapsed_seconds=elapsed,
+        final_gradient_norm=final_grad_norm,
+        alpha=alpha,
+        beta=beta,
+    )
+
+
+def nesterov_from_h(instance, w0, mu, l_smooth, tol, max_iter):
+    alpha = 1.0 / l_smooth
+    beta = (np.sqrt(l_smooth) - np.sqrt(mu)) / (
+        np.sqrt(l_smooth) + np.sqrt(mu)
+    )
+
+    weights = np.array(w0, dtype=float, copy=True)
+    previous_weights = weights.copy()
+    final_evaluation_point = weights.copy()
+    converged = False
+    final_grad_norm = np.inf
+    iterations = 0
+
+    start = perf_counter()
+    for iteration in range(max_iter + 1):
+        evaluation_point = weights + beta * (weights - previous_weights)
+        grad = elm_gradient_from_h(evaluation_point, instance)
+        final_grad_norm = float(np.sqrt(np.sum(grad * grad)))
+        final_evaluation_point = evaluation_point
+
+        if final_grad_norm <= tol:
+            converged = True
+            iterations = iteration
+            break
+
+        if iteration == max_iter:
+            iterations = iteration
+            break
+
+        next_weights = evaluation_point - alpha * grad
+        previous_weights = weights
+        weights = next_weights
+
+    elapsed = perf_counter() - start
+
+    return OptimizationResult(
+        method="Nesterov",
+        weights=final_evaluation_point,
+        iterations=iterations,
+        converged=converged,
+        elapsed_seconds=elapsed,
+        final_gradient_norm=final_grad_norm,
+        alpha=alpha,
+        beta=beta,
+    )
+
+
+def pytorch_from_h(
+    instance,
+    w0,
+    method_name,
+    alpha,
+    beta,
+    use_nesterov,
+    tol,
+    max_iter,
+):
+    if torch is None:
+        raise ImportError("PyTorch is required for " + method_name + ".")
+
+    h_tensor = torch.tensor(instance.h_train_aug, dtype=torch.float64)
+    y_tensor = torch.tensor(instance.y_train, dtype=torch.float64)
+    weights = torch.nn.Parameter(torch.tensor(w0, dtype=torch.float64))
+
+    optimizer = torch.optim.SGD(
+        [weights],
+        lr=float(alpha),
+        momentum=float(beta),
+        dampening=0.0,
+        nesterov=bool(use_nesterov),
+    )
+
+    converged = False
+    final_grad_norm = np.inf
+    iterations = 0
+
+    start = perf_counter()
+    for iteration in range(max_iter + 1):
+        optimizer.zero_grad()
+        residual = weights @ h_tensor - y_tensor
+        value = 0.5 * torch.sum(residual * residual) / instance.n_train
+        value = value + 0.5 * instance.lambda_reg * torch.sum(weights * weights)
+        value.backward()
+
+        grad_tensor = weights.grad.detach()
+        final_grad_norm = float(torch.linalg.norm(grad_tensor).item())
+
+        if final_grad_norm <= tol:
+            converged = True
+            iterations = iteration
+            break
+
+        if iteration == max_iter:
+            iterations = iteration
+            break
+
+        optimizer.step()
+
+    elapsed = perf_counter() - start
+    weights_numpy = weights.detach().cpu().numpy().copy()
+
+    return OptimizationResult(
+        method=method_name,
+        weights=weights_numpy,
+        iterations=iterations,
+        converged=converged,
+        elapsed_seconds=elapsed,
+        final_gradient_norm=final_grad_norm,
+        alpha=alpha,
+        beta=beta,
+    )
+
+
 def make_requested_history_rows(
     context,
     result,
@@ -2697,7 +4724,7 @@ def plot_requested_dimension_scaling_times(rows, figures_dir):
         )
 
     axis.set_yscale("log")
-    axis.set_xlabel("Hidden-layer weights")
+    axis.set_xlabel("Output weights")
     axis.set_ylabel("Computational time (seconds)")
     axis.set_title("Requested Runtime Scaling at Fixed Epsilon")
     axis.grid(True, which="both", alpha=0.3)
@@ -2705,6 +4732,82 @@ def plot_requested_dimension_scaling_times(rows, figures_dir):
 
     fig.tight_layout()
     fig.savefig(figures_dir / "requested_dimension_scaling_times.png", dpi=160)
+    plt.close(fig)
+
+
+def remove_old_dimension_scaling_outputs(output_dir, figures_dir):
+    """Delete previous dimension-scaling files that overlap this experiment."""
+
+    csv_names = [
+        "requested_dimension_scaling_times.csv",
+    ]
+    figure_names = [
+        "requested_dimension_scaling_times.png",
+        "analysis_dimension_scaling_times.png",
+    ]
+
+    for csv_name in csv_names:
+        path = output_dir / csv_name
+        if path.exists():
+            path.unlink()
+
+    for figure_name in figure_names:
+        path = figures_dir / figure_name
+        if path.exists():
+            path.unlink()
+
+
+def plot_handwritten_dimension_scaling_times(rows, figures_dir):
+    if len(rows) == 0:
+        return
+
+    methods = ["LDLT", "Heavy Ball", "Nesterov"]
+    dimensions = unique_numeric_values(rows, "output_weight_count")
+    epsilon = float(rows[0]["epsilon"])
+
+    fig, axis = plt.subplots(figsize=(8.8, 5.2))
+
+    for method in methods:
+        times = []
+        for dimension in dimensions:
+            value = np.nan
+            for row in rows:
+                same_method = row["algorithm"] == method
+                same_dimension = (
+                    float(row["output_weight_count"]) == float(dimension)
+                )
+                if same_method and same_dimension:
+                    value = max(
+                        float(row["computational_time_seconds"]),
+                        1e-12,
+                    )
+                    break
+            times.append(value)
+
+        axis.plot(
+            dimensions,
+            times,
+            label=method,
+            marker=marker_for_time_method(method),
+            color=time_plot_color(method),
+            linewidth=2.4,
+        )
+
+    axis.set_yscale("log")
+    axis.set_xlabel("Output weights")
+    axis.set_ylabel("Computational time (seconds)")
+    axis.set_title(
+        "Handwritten Algorithms Runtime Scaling, epsilon="
+        + format_epsilon_label(epsilon)
+    )
+    axis.grid(True, which="both", alpha=0.3)
+    axis.legend()
+
+    fig.tight_layout()
+    fig.savefig(
+        figures_dir / "handwritten_dimension_scaling_times.png",
+        dpi=160,
+    )
     plt.close(fig)
 
 
@@ -2813,7 +4916,7 @@ def plot_requested_history_rows(rows, title, epsilon, path):
     subtitle = (
         "epsilon="
         + format_epsilon_label(epsilon)
-        + ", hidden weights="
+        + ", output weights="
         + str(int(float(dimensionality)))
     )
     fig.suptitle(title + "\n" + subtitle)
@@ -2868,6 +4971,303 @@ def plot_requested_rho_time_comparison(rows, figures_dir):
     plt.close(fig)
 
 
+def remove_old_rho_conditioning_outputs(output_dir, figures_dir):
+    """Remove old rho/conditioning plots that overlap this request."""
+
+    patterns = [
+        "requested_conditioning_rho_*.png",
+        "requested_rho_time_comparison.png",
+        "requested_library_rho_*.png",
+        "rho_conditioning_final_metrics.png",
+        "rho_conditioning_gradient_norm.png",
+        "rho_conditioning_objective_gap.png",
+        "rho_conditioning_relative_error.png",
+        "conditioning_effect_rho_*.png",
+        "analysis_synthetic_well_conditioned_parameter_epsilon_sweep.png",
+        "analysis_synthetic_ill_conditioned_parameter_epsilon_sweep.png",
+        "analysis_beta_fixed_variable_synthetic_well_conditioned_*.png",
+        "analysis_beta_fixed_variable_synthetic_ill_conditioned_*.png",
+        "analysis_builtin_fixed_synthetic_synthetic_well_conditioned_*.png",
+        "analysis_builtin_fixed_synthetic_synthetic_ill_conditioned_*.png",
+        "synthetic_well_conditioned_well_conditioned_corr_*.png",
+        "synthetic_ill_conditioned_ill_conditioned_corr_*.png",
+        "convergence_time_synthetic_well_conditioned.png",
+        "convergence_time_synthetic_ill_conditioned.png",
+        "conditioning_overview.png",
+    ]
+
+    for pattern in patterns:
+        paths = list(figures_dir.glob(pattern))
+        for path in paths:
+            path.unlink()
+
+
+def plot_requested_conditioning_effect(history_rows, summary_rows, figures_dir):
+    """Create one two-panel plot for each requested rho value."""
+
+    if len(history_rows) == 0:
+        return
+
+    rho_values = unique_numeric_values(history_rows, "rho")
+
+    for rho in rho_values:
+        selected = []
+        for row in history_rows:
+            if abs(float(row["rho"]) - rho) <= 1e-15:
+                selected.append(row)
+
+        if len(selected) == 0:
+            continue
+
+        epsilon = float(selected[0]["epsilon"])
+        output_weights = int(float(selected[0]["output_weight_count"]))
+        condition_number = float(selected[0]["condition_number"])
+
+        fig, axes = plt.subplots(1, 2, figsize=(12.2, 4.8))
+        methods = ["Heavy Ball", "Nesterov"]
+
+        for method in methods:
+            method_rows = []
+            for row in selected:
+                if row["method"] == method:
+                    method_rows.append(row)
+            method_rows.sort(key=lambda row: int(row["iteration"]))
+
+            if len(method_rows) == 0:
+                continue
+
+            iterations = [int(row["iteration"]) for row in method_rows]
+            relative_gaps = [
+                max(float(row["relative_gap"]), 1e-300)
+                for row in method_rows
+            ]
+            gradient_norms = [
+                max(float(row["grad_norm"]), 1e-300)
+                for row in method_rows
+            ]
+            style = plot_style_for_method(method)
+
+            axes[0].semilogy(
+                iterations,
+                relative_gaps,
+                label=method,
+                color=style["color"],
+                marker=style["marker"],
+                markevery=style["markevery"],
+                linewidth=style["linewidth"],
+            )
+            axes[1].semilogy(
+                iterations,
+                gradient_norms,
+                label=method,
+                color=style["color"],
+                marker=style["marker"],
+                markevery=style["markevery"],
+                linewidth=style["linewidth"],
+            )
+
+        axes[0].set_title("Relative Gap")
+        axes[0].set_xlabel("Iteration")
+        axes[0].set_ylabel("(f(W) - f*) / max(1, |f*|)")
+
+        axes[1].set_title("Gradient Norm")
+        axes[1].set_xlabel("Iteration")
+        axes[1].set_ylabel("||grad f(W)||_F")
+
+        for axis in axes:
+            axis.grid(True, which="both", alpha=0.3)
+            axis.legend()
+
+        subtitle = (
+            "rho="
+            + format(rho, ".1f")
+            + ", epsilon="
+            + format_epsilon_label(epsilon)
+            + ", n_train=1000, output weights="
+            + str(output_weights)
+            + ", kappa~"
+            + format(condition_number, ".2e")
+        )
+        fig.suptitle("Conditioning Number Effect\n" + subtitle)
+        fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.88])
+
+        filename = (
+            "conditioning_effect_rho_"
+            + format_decimal_for_name(rho)
+            + ".png"
+        )
+        fig.savefig(figures_dir / filename, dpi=160)
+        plt.close(fig)
+
+
+def plot_rho_conditioning_final_metrics(rows, figures_dir):
+    if len(rows) == 0:
+        return
+
+    rho_values = unique_numeric_values(rows, "rho")
+    methods = ["Heavy Ball", "Nesterov"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.0))
+    flat_axes = axes.ravel()
+
+    condition_values = []
+    for rho in rho_values:
+        value = np.nan
+        for row in rows:
+            same_rho = abs(float(row["rho"]) - rho) <= 1e-15
+            if same_rho:
+                value = float(row["condition_number"])
+                break
+        condition_values.append(value)
+
+    flat_axes[0].plot(
+        rho_values,
+        condition_values,
+        marker="o",
+        linewidth=2.2,
+        color="#4c78a8",
+    )
+    flat_axes[0].set_yscale("log")
+    flat_axes[0].set_title("Condition Number")
+    flat_axes[0].set_xlabel("rho")
+    flat_axes[0].set_ylabel("estimated L / mu")
+
+    plot_rho_summary_metric(
+        flat_axes[1],
+        rows,
+        rho_values,
+        methods,
+        "time_seconds",
+        "Computational Time",
+        "seconds",
+        True,
+    )
+    plot_rho_summary_metric(
+        flat_axes[2],
+        rows,
+        rho_values,
+        methods,
+        "final_gradient_norm",
+        "Final Gradient Norm",
+        "||grad f(W)||_F",
+        True,
+    )
+    plot_rho_summary_metric(
+        flat_axes[3],
+        rows,
+        rho_values,
+        methods,
+        "relative_error_to_reference",
+        "Relative Error to Reference",
+        "||W - W*|| / ||W*||",
+        True,
+    )
+
+    for axis in flat_axes:
+        axis.grid(True, which="both", alpha=0.3)
+        axis.set_xticks(rho_values)
+
+    fig.suptitle("Rho Conditioning Sweep, Hidden Width = 10000")
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
+    fig.savefig(figures_dir / "rho_conditioning_final_metrics.png", dpi=160)
+    plt.close(fig)
+
+
+def plot_rho_summary_metric(
+    axis,
+    rows,
+    rho_values,
+    methods,
+    field,
+    title,
+    ylabel,
+    use_log_scale,
+):
+    for method in methods:
+        y_values = []
+        for rho in rho_values:
+            value = np.nan
+            for row in rows:
+                same_method = row["method"] == method
+                same_rho = abs(float(row["rho"]) - rho) <= 1e-15
+                if same_method and same_rho:
+                    value = max(float(row[field]), 1e-16)
+                    break
+            y_values.append(value)
+
+        style = plot_style_for_method(method)
+        axis.plot(
+            rho_values,
+            y_values,
+            marker=style["marker"],
+            linewidth=2.3,
+            color=style["color"],
+            label=method,
+        )
+
+    if use_log_scale:
+        axis.set_yscale("log")
+    axis.set_title(title)
+    axis.set_xlabel("rho")
+    axis.set_ylabel(ylabel)
+    axis.legend()
+
+
+def plot_rho_conditioning_history_metric(
+    rows,
+    field,
+    title,
+    ylabel,
+    path,
+):
+    if len(rows) == 0:
+        return
+
+    rho_values = unique_numeric_values(rows, "rho")
+    methods = ["Heavy Ball", "Nesterov"]
+    colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(rho_values)))
+
+    fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.8), sharey=True)
+
+    for method_index in range(len(methods)):
+        method = methods[method_index]
+        axis = axes[method_index]
+
+        for rho_index in range(len(rho_values)):
+            rho = rho_values[rho_index]
+            selected = []
+            for row in rows:
+                same_method = row["method"] == method
+                same_rho = abs(float(row["rho"]) - rho) <= 1e-15
+                if same_method and same_rho:
+                    selected.append(row)
+
+            selected.sort(key=lambda row: int(row["iteration"]))
+            if len(selected) == 0:
+                continue
+
+            iterations = [int(row["iteration"]) for row in selected]
+            values = [max(float(row[field]), 1e-16) for row in selected]
+            axis.semilogy(
+                iterations,
+                values,
+                label="rho=" + format(rho, ".1f"),
+                color=colors[rho_index],
+                linewidth=1.9,
+            )
+
+        axis.set_title(method)
+        axis.set_xlabel("iteration")
+        axis.grid(True, which="both", alpha=0.3)
+        axis.legend(fontsize=7, ncol=2)
+
+    axes[0].set_ylabel(ylabel)
+    fig.suptitle(title + " as rho changes, hidden width = 10000")
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.92])
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
 def plot_requested_library_pair(
     context,
     scratch_result,
@@ -2919,7 +5319,7 @@ def plot_requested_library_pair(
 
 def plot_requested_two_results(context, results, epsilon, path, title_prefix):
     history_rows = []
-    dimensionality = context["instance"].n_features * context["instance"].hidden_width
+    dimensionality = output_weight_count(context["instance"])
 
     for result in results:
         history_rows.extend(
@@ -3020,7 +5420,7 @@ def plot_requested_history_rows_for_methods(
     subtitle = (
         "epsilon="
         + format_epsilon_label(epsilon)
-        + ", hidden weights="
+        + ", output weights="
         + str(int(float(dimensionality)))
     )
     fig.suptitle(title + "\n" + subtitle)
@@ -3053,30 +5453,82 @@ def numpy_solve_reference(q, c):
     )
 
 
-def numpy_cholesky_reference(q, c):
-    """Built-in Cholesky benchmark.
+def scipy_ldlt_reference(q, c):
+    """Built-in SciPy LDLT benchmark.
 
-    This is another validation method only. The scratch LDLT implementation in
-    ``algorithms.py`` does not call Cholesky.
+    This is used only as a reference implementation of the same factorization
+    family as our hand-written LDLT. The project algorithms do not call SciPy.
     """
 
     start = perf_counter()
-    lower = np.linalg.cholesky(q)
-    z = np.linalg.solve(lower, c.T)
-    weights = np.linalg.solve(lower.T, z).T
+    weights = solve_with_scipy_ldlt(q, c.T).T
     elapsed = perf_counter() - start
 
     grad = weights @ q - c
     grad_norm = float(np.sqrt(np.sum(grad * grad)))
 
     return OptimizationResult(
-        method="NumPy Cholesky",
+        method="SciPy LDLT",
         weights=weights,
         iterations=0,
         converged=True,
         elapsed_seconds=elapsed,
         final_gradient_norm=grad_norm,
     )
+
+
+def solve_with_scipy_ldlt(matrix, rhs):
+    """Solve matrix * X = rhs using scipy.linalg.ldl."""
+
+    check_scipy_available()
+
+    rhs_array = np.asarray(rhs, dtype=float)
+    was_vector = False
+    if rhs_array.ndim == 1:
+        rhs_array = rhs_array[:, None]
+        was_vector = True
+
+    lu, d_matrix, perm = scipy_ldl(
+        matrix,
+        lower=True,
+        hermitian=True,
+        check_finite=True,
+    )
+
+    lower_factor = lu[perm, :]
+    rhs_permuted = rhs_array[perm, :]
+
+    z = scipy_solve_triangular(
+        lower_factor,
+        rhs_permuted,
+        lower=True,
+        unit_diagonal=True,
+        check_finite=False,
+    )
+
+    diagonal_only = np.diag(np.diag(d_matrix))
+    off_diagonal = d_matrix - diagonal_only
+    if np.max(np.abs(off_diagonal)) <= 1e-14:
+        diagonal_values = np.diag(d_matrix)
+        y = z / diagonal_values[:, None]
+    else:
+        # This branch handles the rare case where SciPy returns 2x2 blocks.
+        y = np.linalg.solve(d_matrix, z)
+
+    solution_permuted = scipy_solve_triangular(
+        lower_factor.T,
+        y,
+        lower=False,
+        unit_diagonal=True,
+        check_finite=False,
+    )
+
+    solution = np.empty_like(solution_permuted)
+    solution[perm, :] = solution_permuted
+
+    if was_vector:
+        return solution[:, 0]
+    return solution
 
 
 def nesterov_variable_beta(
@@ -3312,6 +5764,7 @@ def make_conditioning_row(scenario, instance, spectral):
         "n_features": instance.n_features,
         "n_classes": instance.n_classes,
         "hidden_width": instance.hidden_width,
+        "total_output_weights": output_weight_count(instance),
         "q_dimension": q_dimension,
         "lambda_reg": instance.lambda_reg,
         "power_method_lambda_max_estimate": spectral.raw_largest_eigenvalue_estimate,
@@ -3345,7 +5798,7 @@ def summarize_result(
     reduction = final_grad_norm / max(initial_grad_norm, 1e-300)
 
     method_type = "scratch"
-    if result.method in ["NumPy solve", "NumPy Cholesky"]:
+    if result.method in ["NumPy solve", "SciPy LDLT"]:
         method_type = "built-in benchmark"
     if result.method in ["PyTorch SGD momentum", "PyTorch SGD Nesterov"]:
         method_type = "library optimizer"
@@ -3388,6 +5841,7 @@ def summarize_result(
         "mu": spectral.mu,
         "activation": instance.activation,
         "hidden_width": instance.hidden_width,
+        "total_output_weights": output_weight_count(instance),
         "alpha": "" if result.alpha is None else result.alpha,
         "beta": "" if result.beta is None else result.beta,
     }
@@ -3950,7 +6404,7 @@ def convergence_time_methods():
         "PyTorch SGD momentum",
         "PyTorch SGD Nesterov",
         "NumPy solve",
-        "NumPy Cholesky",
+        "SciPy LDLT",
     ]
 
 
@@ -3963,7 +6417,7 @@ def time_plot_color(method):
         "PyTorch SGD momentum": "#17becf",
         "PyTorch SGD Nesterov": "#d62728",
         "NumPy solve": "#9467bd",
-        "NumPy Cholesky": "#8c564b",
+        "SciPy LDLT": "#8c564b",
     }
     if method in colors:
         return colors[method]
@@ -4034,7 +6488,7 @@ def plot_dimension_scaling_times(rows, figures_dir):
         )
 
     axis.set_yscale("log")
-    axis.set_xlabel("Hidden-layer weights")
+    axis.set_xlabel("Output weights")
     axis.set_ylabel("Elapsed seconds (log scale)")
     axis.set_title("Runtime Scaling at Fixed Epsilon")
     axis.grid(True, which="both", alpha=0.3)
@@ -4506,7 +6960,7 @@ def marker_for_time_method(method):
         "PyTorch SGD momentum": "x",
         "PyTorch SGD Nesterov": "P",
         "NumPy solve": "*",
-        "NumPy Cholesky": "v",
+        "SciPy LDLT": "v",
     }
     if method in markers:
         return markers[method]
@@ -4597,7 +7051,7 @@ def builtin_comparison_methods():
         "PyTorch SGD momentum",
         "PyTorch SGD Nesterov",
         "NumPy solve",
-        "NumPy Cholesky",
+        "SciPy LDLT",
     ]
 
 
@@ -4608,8 +7062,8 @@ def short_method_labels(methods):
             labels.append("PyTorch HB")
         elif method == "PyTorch SGD Nesterov":
             labels.append("PyTorch NAG")
-        elif method == "NumPy Cholesky":
-            labels.append("NumPy Chol")
+        elif method == "SciPy LDLT":
+            labels.append("SciPy LDLT")
         else:
             labels.append(method)
     return labels
