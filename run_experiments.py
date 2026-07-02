@@ -205,6 +205,119 @@ DETAILED_HISTORY_FIELDS = [
     "relative_error_to_reference",
 ]
 
+SYNTHETIC_PARAMETER_SWEEP_FIELDS = [
+    "analysis_type",
+    "parameter_name",
+    "parameter_value",
+    "algorithm",
+    "epsilon",
+    "output_weight_count",
+    "hidden_width",
+    "q_dimension",
+    "n_train",
+    "n_test",
+    "n_features",
+    "n_classes",
+    "lambda_reg",
+    "estimated_L",
+    "mu",
+    "condition_number",
+    "converged",
+    "iterations",
+    "time_seconds",
+    "final_gradient_norm",
+    "objective_value",
+    "objective_gap_to_ldlt",
+    "relative_error_to_ldlt",
+    "train_accuracy",
+    "test_accuracy",
+    "alpha",
+    "beta",
+]
+
+SYNTHETIC_PARAMETER_HISTORY_FIELDS = [
+    "analysis_type",
+    "parameter_name",
+    "parameter_value",
+    "method",
+    "epsilon",
+    "output_weight_count",
+    "condition_number",
+    "iteration",
+    "relative_gap",
+    "gradient_norm",
+    "objective_gap_to_ldlt",
+]
+
+SYNTHETIC_PARAMETER_AGGREGATE_FIELDS = [
+    "analysis_type",
+    "parameter_name",
+    "parameter_value",
+    "algorithm",
+    "epsilon",
+    "number_of_trials",
+    "output_weight_count",
+    "hidden_width",
+    "q_dimension",
+    "n_train",
+    "n_test",
+    "n_features",
+    "n_classes",
+    "lambda_reg",
+    "estimated_L",
+    "mu",
+    "condition_number",
+    "convergence_rate",
+    "mean_computational_time_seconds",
+    "std_computational_time_seconds",
+    "mean_iterations",
+    "std_iterations",
+    "mean_initial_gradient_norm",
+    "std_initial_gradient_norm",
+    "mean_final_gradient_norm",
+    "std_final_gradient_norm",
+    "mean_objective_value",
+    "mean_objective_gap_to_ldlt",
+    "mean_relative_error_to_ldlt",
+    "mean_train_accuracy",
+    "mean_test_accuracy",
+    "alpha",
+    "beta",
+]
+
+SYNTHETIC_PARAMETER_TRIAL_FIELDS = [
+    "analysis_type",
+    "parameter_name",
+    "parameter_value",
+    "initialization_index",
+    "initialization_seed",
+    "algorithm",
+    "epsilon",
+    "output_weight_count",
+    "hidden_width",
+    "q_dimension",
+    "n_train",
+    "n_test",
+    "n_features",
+    "n_classes",
+    "lambda_reg",
+    "estimated_L",
+    "mu",
+    "condition_number",
+    "converged",
+    "iterations",
+    "computational_time_seconds",
+    "initial_gradient_norm",
+    "final_gradient_norm",
+    "objective_value",
+    "objective_gap_to_ldlt",
+    "relative_error_to_ldlt",
+    "train_accuracy",
+    "test_accuracy",
+    "alpha",
+    "beta",
+]
+
 REQUESTED_DIMENSION_TIME_FIELDS = [
     "algorithm",
     "dimensionality",
@@ -281,6 +394,7 @@ LDLT_SCIPY_COMPARISON_FIELDS = [
     "minimum_value",
     "computational_time_seconds",
     "residual_norm",
+    "relative_residual_norm",
     "absolute_error_to_known_optimum",
     "relative_error_to_known_optimum",
     "relative_difference_to_our_ldlt",
@@ -392,6 +506,23 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--only-synthetic-parameter-sweeps",
+        action="store_true",
+        help=(
+            "Run only the new synthetic sparsity and rho sweeps with our "
+            "hand-written LDLT, Heavy Ball, and Nesterov methods."
+        ),
+    )
+    parser.add_argument(
+        "--synthetic-init-trials",
+        type=int,
+        default=100,
+        help=(
+            "Number of random initializations for HB/Nesterov in the "
+            "synthetic sparsity/rho sweep."
+        ),
+    )
+    parser.add_argument(
         "--real-comparison-output-weights",
         "--real-comparison-hidden-weights",
         dest="real_comparison_output_weights",
@@ -454,8 +585,8 @@ def main():
         )
         output_path = output_dir / "ldlt_scipy_comparison.csv"
         write_csv(output_path, LDLT_SCIPY_COMPARISON_FIELDS, rows)
+        remove_old_ldlt_scipy_synthetic_outputs(figures_dir)
         plot_ldlt_scipy_time_bars(rows, figures_dir)
-        plot_ldlt_known_solution_accuracy(rows, figures_dir)
         print("Wrote " + str(output_path))
         return
 
@@ -492,7 +623,7 @@ def main():
     if args.only_handwritten_dimension_scaling:
         epsilon = 1e-3
         scaling_max_iter = choose_handwritten_scaling_max_iter(args.max_iter)
-        rows = run_handwritten_dimension_scaling(
+        rows, scratch_history_rows = run_handwritten_dimension_scaling(
             seed=args.seed,
             epsilon=epsilon,
             max_iter=scaling_max_iter,
@@ -504,8 +635,85 @@ def main():
         output_path = output_dir / "handwritten_dimension_scaling_times.csv"
         write_csv(output_path, HANDWRITTEN_DIMENSION_SCALING_FIELDS, rows)
         plot_handwritten_dimension_scaling_times(rows, figures_dir)
+        plot_handwritten_dimension_scaling_histogram(rows, figures_dir)
+        plot_requested_real_digits_scratch_iterative_scaling(
+            scratch_history_rows,
+            epsilon,
+            figures_dir / "requested_real_digits_scratch_iterative.png",
+        )
 
         print("Wrote " + str(output_path))
+        return
+
+    if args.only_synthetic_parameter_sweeps:
+        epsilon = 1e-3
+        sweep_max_iter = choose_synthetic_parameter_sweep_max_iter(args.max_iter)
+        initialization_trials = args.synthetic_init_trials
+        shared_plot_seed = args.seed + 910000
+        remove_old_synthetic_parameter_outputs(output_dir, figures_dir)
+
+        sparsity_aggregate, sparsity_trials, sparsity_plot_history = run_synthetic_parameter_sweep(
+            analysis_type="sparsity",
+            seed=args.seed + 3000,
+            epsilon=epsilon,
+            max_iter=sweep_max_iter,
+            record_every=args.record_every,
+            initialization_trials=initialization_trials,
+            shared_plot_seed=shared_plot_seed,
+        )
+        rho_aggregate, rho_trials, rho_plot_history = run_synthetic_parameter_sweep(
+            analysis_type="rho",
+            seed=args.seed + 4000,
+            epsilon=epsilon,
+            max_iter=sweep_max_iter,
+            record_every=args.record_every,
+            initialization_trials=initialization_trials,
+            shared_plot_seed=shared_plot_seed,
+        )
+
+        aggregate_rows = []
+        aggregate_rows.extend(sparsity_aggregate)
+        aggregate_rows.extend(rho_aggregate)
+
+        trial_rows = []
+        trial_rows.extend(sparsity_trials)
+        trial_rows.extend(rho_trials)
+
+        aggregate_path = output_dir / "synthetic_parameter_sweep_aggregate.csv"
+        trial_path = output_dir / "synthetic_parameter_sweep_trials.csv"
+
+        write_csv(
+            aggregate_path,
+            SYNTHETIC_PARAMETER_AGGREGATE_FIELDS,
+            aggregate_rows,
+        )
+        write_csv(trial_path, SYNTHETIC_PARAMETER_TRIAL_FIELDS, trial_rows)
+
+        plot_synthetic_parameter_convergence_by_value(
+            sparsity_plot_history,
+            "sparsity",
+            shared_plot_seed,
+            figures_dir,
+        )
+        plot_synthetic_parameter_time_histogram(
+            aggregate_rows,
+            "sparsity",
+            figures_dir / "synthetic_sparsity_sweep_time_histogram.png",
+        )
+        plot_synthetic_parameter_convergence_by_value(
+            rho_plot_history,
+            "rho",
+            shared_plot_seed,
+            figures_dir,
+        )
+        plot_synthetic_parameter_time_histogram(
+            aggregate_rows,
+            "rho",
+            figures_dir / "synthetic_rho_sweep_time_histogram.png",
+        )
+
+        print("Wrote " + str(aggregate_path))
+        print("Wrote " + str(trial_path))
         return
 
     max_iter = choose_max_iter(args.suite, args.max_iter)
@@ -665,6 +873,14 @@ def choose_rho_sweep_max_iter(max_iter_override):
 
 def choose_handwritten_scaling_max_iter(max_iter_override):
     """Default iteration budget for the handwritten scaling experiment."""
+
+    if max_iter_override is not None:
+        return max_iter_override
+    return 5000
+
+
+def choose_synthetic_parameter_sweep_max_iter(max_iter_override):
+    """Default budget for the new sparsity/rho synthetic sweeps."""
 
     if max_iter_override is not None:
         return max_iter_override
@@ -1464,6 +1680,11 @@ def create_synthetic_analysis_scenario(
         seed=seed,
     )
     x_train, train_labels, x_test, test_labels = data
+    train_labels, test_labels = force_label_dimension(
+        train_labels,
+        test_labels,
+        n_classes,
+    )
 
     if kind == "sparse":
         x_train, x_test = apply_sparse_feature_mask(
@@ -1548,6 +1769,11 @@ def create_conditioning_effect_instance(rho, config, seed):
         seed,
     )
     x_train, train_labels, x_test, test_labels = data
+    train_labels, test_labels = force_label_dimension(
+        train_labels,
+        test_labels,
+        n_classes,
+    )
 
     return create_elm_instance_from_arrays(
         x_train,
@@ -1594,6 +1820,20 @@ def generate_equicorrelated_classification_data(
     x_test = centers[:, test_labels] + test_noise
     x_train, x_test = standardize_train_test(x_train, x_test)
     return x_train, train_labels, x_test, test_labels
+
+
+def force_label_dimension(train_labels, test_labels, n_classes):
+    """Ensure that one_hot creates exactly n_classes output rows."""
+
+    fixed_train_labels = np.array(train_labels, dtype=int, copy=True)
+    fixed_test_labels = np.array(test_labels, dtype=int, copy=True)
+
+    if fixed_train_labels.size > 0:
+        fixed_train_labels[0] = n_classes - 1
+    if fixed_test_labels.size > 0:
+        fixed_test_labels[0] = n_classes - 1
+
+    return fixed_train_labels, fixed_test_labels
 
 
 def run_rho_conditioning_sweep(seed, epsilon, max_iter, record_every):
@@ -3037,22 +3277,14 @@ def requested_dimension_configs(suite):
 
 
 def handwritten_dimension_scaling_configs():
-    """Dimensions for the requested handwritten-only scaling comparison."""
+    """Output-weight sizes for the Digits handwritten scaling comparison."""
 
     configs = []
-    total_weights = [10000, 50000, 100000]
-    n_train = 1000
-    n_test = 350
-    n_features = 100
-    n_classes = 100
+    total_weights = [10000, 25000, 50000, 100000]
 
     for value in total_weights:
         configs.append(
             {
-                "n_train": n_train,
-                "n_test": n_test,
-                "n_features": n_features,
-                "n_classes": n_classes,
                 "target_output_weights": value,
             }
         )
@@ -3061,65 +3293,74 @@ def handwritten_dimension_scaling_configs():
 
 
 def run_handwritten_dimension_scaling(seed, epsilon, max_iter, record_every):
-    """Compare only our LDLT, Heavy Ball, and Nesterov as size increases.
+    """Compare our handwritten methods on Digits as the ELM size increases."""
 
-    No built-in solver is used in this experiment. The largest eigenvalue used
-    by the iterative methods is estimated by our Power Method through
-    estimate_spectral_bounds.
-    """
-
+    check_sklearn_available()
     rows = []
+    history_rows = []
     configs = handwritten_dimension_scaling_configs()
 
     for index in range(len(configs)):
         config = configs[index]
         target_weights = config["target_output_weights"]
         print(
-            "Running handwritten dimension scaling: output weights="
+            "Running handwritten dimension scaling on Digits: output weights="
             + str(target_weights)
         )
 
-        scenario = create_synthetic_analysis_scenario(
-            "well",
-            0.1,
-            config,
+        instance = create_real_comparison_instance(
+            "digits",
+            target_weights,
             seed + index,
         )
-        instance = scenario["instance"]
+
+        # This experiment intentionally uses the full primal matrix Q.
+        # No dual formulation is used, because the goal is to show the
+        # computational bottleneck of our handwritten LDLT factorization.
+        q, c = build_primal_elm_system(instance)
 
         spectral = estimate_spectral_bounds(
-            instance.q,
+            q,
             instance.lambda_reg,
             seed=seed + index,
             l_safety_factor=1.01,
         )
 
-        ldlt_result = ldlt_solve_weights(instance.q, instance.c)
-        w0 = np.zeros_like(instance.c)
+        reference_weights = reference_weights_for_real_gap(instance)
+        reference_objective = objective_value_from_h(
+            reference_weights,
+            instance,
+        )
+
+        def objective_fn(weights):
+            return objective_value_from_h(weights, instance)
+
+        ldlt_result = ldlt_solve_weights(q, c)
+        w0 = np.zeros_like(c)
 
         hb_result = heavy_ball(
-            instance.q,
-            instance.c,
+            q,
+            c,
             w0,
             mu=spectral.mu,
             l_smooth=spectral.l_smooth,
             tol=epsilon,
             max_iter=max_iter,
-            objective_fn=None,
-            reference_weights=None,
+            objective_fn=objective_fn,
+            reference_weights=reference_weights,
             record_every=record_every,
         )
 
         nag_result = nesterov_accelerated_gradient(
-            instance.q,
-            instance.c,
+            q,
+            c,
             w0,
             mu=spectral.mu,
             l_smooth=spectral.l_smooth,
             tol=epsilon,
             max_iter=max_iter,
-            objective_fn=None,
-            reference_weights=None,
+            objective_fn=objective_fn,
+            reference_weights=reference_weights,
             record_every=record_every,
         )
 
@@ -3133,15 +3374,36 @@ def run_handwritten_dimension_scaling(seed, epsilon, max_iter, record_every):
                 )
             )
 
-    return rows
+        context = {
+            "reference_objective": reference_objective,
+        }
+        iterative_results = [hb_result, nag_result]
+        for result in iterative_results:
+            history_rows.extend(
+                make_requested_history_rows(
+                    context,
+                    result,
+                    "output_weight_count",
+                    target_weights,
+                    output_weight_count(instance),
+                    epsilon,
+                )
+            )
+
+    return rows, history_rows
 
 
 def make_handwritten_dimension_scaling_row(result, instance, epsilon):
+    if hasattr(instance, "q"):
+        q_dimension = instance.q.shape[0]
+    else:
+        q_dimension = instance.hidden_width + 1
+
     return {
         "algorithm": result.method,
         "output_weight_count": output_weight_count(instance),
         "hidden_width": instance.hidden_width,
-        "q_dimension": instance.q.shape[0],
+        "q_dimension": q_dimension,
         "n_train": instance.n_train,
         "n_test": instance.n_test,
         "n_features": instance.n_features,
@@ -3160,6 +3422,574 @@ def value_or_empty(value):
     if value is None:
         return ""
     return value
+
+
+def synthetic_parameter_sweep_values():
+    values = []
+    for index in range(1, 10):
+        values.append(index / 10.0)
+    return values
+
+
+def synthetic_parameter_histogram_values():
+    return [0.1, 0.3, 0.5, 0.7, 0.9]
+
+
+def synthetic_parameter_sweep_config():
+    """Fixed synthetic size for the new rho/sparsity experiments."""
+
+    return {
+        "n_train": 1000,
+        "n_test": 350,
+        "n_features": 100,
+        "n_classes": 5000,
+        "target_output_weights": 100000,
+    }
+
+
+def run_synthetic_parameter_sweep(
+    analysis_type,
+    seed,
+    epsilon,
+    max_iter,
+    record_every,
+    initialization_trials,
+    shared_plot_seed,
+):
+    """Run LDLT once and HB/Nesterov from many random initializations."""
+
+    aggregate_rows = []
+    trial_rows = []
+    plot_history_rows = []
+    config = synthetic_parameter_sweep_config()
+    values = synthetic_parameter_sweep_values()
+
+    if analysis_type == "sparsity":
+        kind = "sparse"
+        parameter_name = "sparseness_percentage"
+    elif analysis_type == "rho":
+        kind = "ill"
+        parameter_name = "rho"
+    else:
+        raise ValueError("Unknown analysis_type: " + str(analysis_type))
+
+    for index in range(len(values)):
+        parameter_value = values[index]
+        print(
+            "Running synthetic "
+            + analysis_type
+            + " sweep: "
+            + parameter_name
+            + "="
+            + format(parameter_value, ".1f")
+        )
+
+        if analysis_type == "rho":
+            instance = create_conditioning_effect_instance(
+                parameter_value,
+                config,
+                seed,
+            )
+        else:
+            scenario = create_synthetic_analysis_scenario(
+                kind,
+                parameter_value,
+                config,
+                seed,
+            )
+            instance = scenario["instance"]
+        q = instance.q
+        c = instance.c
+
+        spectral = estimate_spectral_bounds(
+            q,
+            instance.lambda_reg,
+            seed=seed,
+            l_safety_factor=1.01,
+        )
+
+        def objective_fn(weights):
+            return objective_value(
+                weights,
+                instance.h_train_aug,
+                instance.y_train,
+                instance.lambda_reg,
+            )
+
+        ldlt_result = ldlt_solve_weights(q, c)
+        reference_weights = ldlt_result.weights
+        reference_objective = objective_fn(reference_weights)
+
+        aggregate_rows.append(
+            make_synthetic_parameter_ldlt_aggregate_row(
+                analysis_type,
+                parameter_name,
+                parameter_value,
+                ldlt_result,
+                instance,
+                spectral,
+                epsilon,
+                objective_fn,
+                reference_weights,
+                reference_objective,
+            )
+        )
+
+        method_trial_rows = {
+            "Heavy Ball": [],
+            "Nesterov": [],
+        }
+
+        for trial_index in range(initialization_trials):
+            initialization_seed = seed + 100000 + trial_index
+            w0 = random_initial_weights(c.shape, initialization_seed)
+
+            hb_result = heavy_ball(
+                q,
+                c,
+                w0,
+                mu=spectral.mu,
+                l_smooth=spectral.l_smooth,
+                tol=epsilon,
+                max_iter=max_iter,
+                objective_fn=None,
+                reference_weights=None,
+                record_every=max_iter + 1,
+            )
+            nag_result = nesterov_accelerated_gradient(
+                q,
+                c,
+                w0,
+                mu=spectral.mu,
+                l_smooth=spectral.l_smooth,
+                tol=epsilon,
+                max_iter=max_iter,
+                objective_fn=None,
+                reference_weights=None,
+                record_every=max_iter + 1,
+            )
+
+            iterative_results = [hb_result, nag_result]
+            for result in iterative_results:
+                row = make_synthetic_parameter_trial_row(
+                    analysis_type,
+                    parameter_name,
+                    parameter_value,
+                    trial_index,
+                    initialization_seed,
+                    result,
+                    w0,
+                    instance,
+                    spectral,
+                    epsilon,
+                    objective_fn,
+                    reference_weights,
+                    reference_objective,
+                )
+                trial_rows.append(row)
+                method_trial_rows[result.method].append(row)
+
+        for method in ["Heavy Ball", "Nesterov"]:
+            aggregate_rows.append(
+                make_synthetic_parameter_iterative_aggregate_row(
+                    analysis_type,
+                    parameter_name,
+                    parameter_value,
+                    method,
+                    method_trial_rows[method],
+                    instance,
+                    spectral,
+                    epsilon,
+                )
+            )
+
+        # These two runs are only for the convergence plots. The same initial
+        # weights are used for every rho/sparsity value, so the curves differ
+        # because of the generated problem, not because of W0.
+        shared_w0 = random_initial_weights(c.shape, shared_plot_seed)
+        hb_plot_result = heavy_ball(
+            q,
+            c,
+            shared_w0,
+            mu=spectral.mu,
+            l_smooth=spectral.l_smooth,
+            tol=epsilon,
+            max_iter=max_iter,
+            objective_fn=objective_fn,
+            reference_weights=reference_weights,
+            record_every=record_every,
+        )
+        nag_plot_result = nesterov_accelerated_gradient(
+            q,
+            c,
+            shared_w0,
+            mu=spectral.mu,
+            l_smooth=spectral.l_smooth,
+            tol=epsilon,
+            max_iter=max_iter,
+            objective_fn=objective_fn,
+            reference_weights=reference_weights,
+            record_every=record_every,
+        )
+
+        plot_results = [hb_plot_result, nag_plot_result]
+        for result in plot_results:
+            plot_history_rows.extend(
+                make_synthetic_parameter_history_rows(
+                    analysis_type,
+                    parameter_name,
+                    parameter_value,
+                    result,
+                    instance,
+                    spectral,
+                    epsilon,
+                    reference_objective,
+                )
+            )
+
+    return aggregate_rows, trial_rows, plot_history_rows
+
+
+def random_initial_weights(shape, seed):
+    """Create a reproducible random starting point for W."""
+
+    rng = np.random.default_rng(seed)
+    return 0.001 * rng.normal(size=shape)
+
+
+def frobenius_norm_numpy(values):
+    return float(np.sqrt(np.sum(values * values)))
+
+
+def make_synthetic_parameter_trial_row(
+    analysis_type,
+    parameter_name,
+    parameter_value,
+    trial_index,
+    initialization_seed,
+    result,
+    initial_weights,
+    instance,
+    spectral,
+    epsilon,
+    objective_fn,
+    reference_weights,
+    reference_objective,
+):
+    initial_gradient = initial_weights @ instance.q - instance.c
+    initial_gradient_norm = frobenius_norm_numpy(initial_gradient)
+
+    objective = objective_fn(result.weights)
+    objective_gap = max(0.0, objective - reference_objective)
+    train_scores = result.weights @ instance.h_train_aug
+    test_scores = result.weights @ instance.h_test_aug
+
+    return {
+        "analysis_type": analysis_type,
+        "parameter_name": parameter_name,
+        "parameter_value": parameter_value,
+        "initialization_index": trial_index,
+        "initialization_seed": initialization_seed,
+        "algorithm": result.method,
+        "epsilon": epsilon,
+        "output_weight_count": output_weight_count(instance),
+        "hidden_width": instance.hidden_width,
+        "q_dimension": instance.q.shape[0],
+        "n_train": instance.n_train,
+        "n_test": instance.n_test,
+        "n_features": instance.n_features,
+        "n_classes": instance.n_classes,
+        "lambda_reg": instance.lambda_reg,
+        "estimated_L": spectral.l_smooth,
+        "mu": spectral.mu,
+        "condition_number": spectral.condition_estimate,
+        "converged": result.converged,
+        "iterations": result.iterations,
+        "computational_time_seconds": result.elapsed_seconds,
+        "initial_gradient_norm": initial_gradient_norm,
+        "final_gradient_norm": result.final_gradient_norm,
+        "objective_value": objective,
+        "objective_gap_to_ldlt": objective_gap,
+        "relative_error_to_ldlt": relative_error(result.weights, reference_weights),
+        "train_accuracy": classification_accuracy(
+            train_scores,
+            instance.train_labels,
+        ),
+        "test_accuracy": classification_accuracy(
+            test_scores,
+            instance.test_labels,
+        ),
+        "alpha": value_or_empty(result.alpha),
+        "beta": value_or_empty(result.beta),
+    }
+
+
+def make_synthetic_parameter_iterative_aggregate_row(
+    analysis_type,
+    parameter_name,
+    parameter_value,
+    method,
+    trial_rows,
+    instance,
+    spectral,
+    epsilon,
+):
+    number_of_trials = len(trial_rows)
+    converged_count = 0
+    for row in trial_rows:
+        if row["converged"] is True:
+            converged_count += 1
+
+    return {
+        "analysis_type": analysis_type,
+        "parameter_name": parameter_name,
+        "parameter_value": parameter_value,
+        "algorithm": method,
+        "epsilon": epsilon,
+        "number_of_trials": number_of_trials,
+        "output_weight_count": output_weight_count(instance),
+        "hidden_width": instance.hidden_width,
+        "q_dimension": instance.q.shape[0],
+        "n_train": instance.n_train,
+        "n_test": instance.n_test,
+        "n_features": instance.n_features,
+        "n_classes": instance.n_classes,
+        "lambda_reg": instance.lambda_reg,
+        "estimated_L": spectral.l_smooth,
+        "mu": spectral.mu,
+        "condition_number": spectral.condition_estimate,
+        "convergence_rate": safe_fraction(converged_count, number_of_trials),
+        "mean_computational_time_seconds": mean_from_rows(
+            trial_rows,
+            "computational_time_seconds",
+        ),
+        "std_computational_time_seconds": std_from_rows(
+            trial_rows,
+            "computational_time_seconds",
+        ),
+        "mean_iterations": mean_from_rows(trial_rows, "iterations"),
+        "std_iterations": std_from_rows(trial_rows, "iterations"),
+        "mean_initial_gradient_norm": mean_from_rows(
+            trial_rows,
+            "initial_gradient_norm",
+        ),
+        "std_initial_gradient_norm": std_from_rows(
+            trial_rows,
+            "initial_gradient_norm",
+        ),
+        "mean_final_gradient_norm": mean_from_rows(
+            trial_rows,
+            "final_gradient_norm",
+        ),
+        "std_final_gradient_norm": std_from_rows(
+            trial_rows,
+            "final_gradient_norm",
+        ),
+        "mean_objective_value": mean_from_rows(trial_rows, "objective_value"),
+        "mean_objective_gap_to_ldlt": mean_from_rows(
+            trial_rows,
+            "objective_gap_to_ldlt",
+        ),
+        "mean_relative_error_to_ldlt": mean_from_rows(
+            trial_rows,
+            "relative_error_to_ldlt",
+        ),
+        "mean_train_accuracy": mean_from_rows(trial_rows, "train_accuracy"),
+        "mean_test_accuracy": mean_from_rows(trial_rows, "test_accuracy"),
+        "alpha": value_from_first_row(trial_rows, "alpha"),
+        "beta": value_from_first_row(trial_rows, "beta"),
+    }
+
+
+def make_synthetic_parameter_ldlt_aggregate_row(
+    analysis_type,
+    parameter_name,
+    parameter_value,
+    result,
+    instance,
+    spectral,
+    epsilon,
+    objective_fn,
+    reference_weights,
+    reference_objective,
+):
+    objective = objective_fn(result.weights)
+    objective_gap = max(0.0, objective - reference_objective)
+    train_scores = result.weights @ instance.h_train_aug
+    test_scores = result.weights @ instance.h_test_aug
+
+    return {
+        "analysis_type": analysis_type,
+        "parameter_name": parameter_name,
+        "parameter_value": parameter_value,
+        "algorithm": result.method,
+        "epsilon": epsilon,
+        "number_of_trials": 1,
+        "output_weight_count": output_weight_count(instance),
+        "hidden_width": instance.hidden_width,
+        "q_dimension": instance.q.shape[0],
+        "n_train": instance.n_train,
+        "n_test": instance.n_test,
+        "n_features": instance.n_features,
+        "n_classes": instance.n_classes,
+        "lambda_reg": instance.lambda_reg,
+        "estimated_L": spectral.l_smooth,
+        "mu": spectral.mu,
+        "condition_number": spectral.condition_estimate,
+        "convergence_rate": 1.0,
+        "mean_computational_time_seconds": result.elapsed_seconds,
+        "std_computational_time_seconds": 0.0,
+        "mean_iterations": result.iterations,
+        "std_iterations": 0.0,
+        "mean_initial_gradient_norm": "",
+        "std_initial_gradient_norm": "",
+        "mean_final_gradient_norm": result.final_gradient_norm,
+        "std_final_gradient_norm": 0.0,
+        "mean_objective_value": objective,
+        "mean_objective_gap_to_ldlt": objective_gap,
+        "mean_relative_error_to_ldlt": relative_error(
+            result.weights,
+            reference_weights,
+        ),
+        "mean_train_accuracy": classification_accuracy(
+            train_scores,
+            instance.train_labels,
+        ),
+        "mean_test_accuracy": classification_accuracy(
+            test_scores,
+            instance.test_labels,
+        ),
+        "alpha": "",
+        "beta": "",
+    }
+
+
+def mean_from_rows(rows, field):
+    values = numeric_values_from_rows(rows, field)
+    if len(values) == 0:
+        return ""
+    return float(np.mean(values))
+
+
+def std_from_rows(rows, field):
+    values = numeric_values_from_rows(rows, field)
+    if len(values) == 0:
+        return ""
+    return float(np.std(values))
+
+
+def numeric_values_from_rows(rows, field):
+    values = []
+    for row in rows:
+        value = row[field]
+        if value != "":
+            values.append(float(value))
+    return values
+
+
+def value_from_first_row(rows, field):
+    if len(rows) == 0:
+        return ""
+    return rows[0][field]
+
+
+def safe_fraction(numerator, denominator):
+    if denominator == 0:
+        return ""
+    return float(numerator) / float(denominator)
+
+
+def make_synthetic_parameter_sweep_row(
+    analysis_type,
+    parameter_name,
+    parameter_value,
+    result,
+    instance,
+    spectral,
+    epsilon,
+    objective_fn,
+    reference_weights,
+    reference_objective,
+):
+    objective = objective_fn(result.weights)
+    objective_gap = max(0.0, objective - reference_objective)
+    train_scores = result.weights @ instance.h_train_aug
+    test_scores = result.weights @ instance.h_test_aug
+
+    return {
+        "analysis_type": analysis_type,
+        "parameter_name": parameter_name,
+        "parameter_value": parameter_value,
+        "algorithm": result.method,
+        "epsilon": epsilon,
+        "output_weight_count": output_weight_count(instance),
+        "hidden_width": instance.hidden_width,
+        "q_dimension": instance.q.shape[0],
+        "n_train": instance.n_train,
+        "n_test": instance.n_test,
+        "n_features": instance.n_features,
+        "n_classes": instance.n_classes,
+        "lambda_reg": instance.lambda_reg,
+        "estimated_L": spectral.l_smooth,
+        "mu": spectral.mu,
+        "condition_number": spectral.condition_estimate,
+        "converged": result.converged,
+        "iterations": result.iterations,
+        "time_seconds": result.elapsed_seconds,
+        "final_gradient_norm": result.final_gradient_norm,
+        "objective_value": objective,
+        "objective_gap_to_ldlt": objective_gap,
+        "relative_error_to_ldlt": relative_error(result.weights, reference_weights),
+        "train_accuracy": classification_accuracy(
+            train_scores,
+            instance.train_labels,
+        ),
+        "test_accuracy": classification_accuracy(
+            test_scores,
+            instance.test_labels,
+        ),
+        "alpha": value_or_empty(result.alpha),
+        "beta": value_or_empty(result.beta),
+    }
+
+
+def make_synthetic_parameter_history_rows(
+    analysis_type,
+    parameter_name,
+    parameter_value,
+    result,
+    instance,
+    spectral,
+    epsilon,
+    reference_objective,
+):
+    rows = []
+    history = result.history
+    denominator = max(1.0, abs(reference_objective))
+
+    iterations = history["iteration"]
+    grad_norms = history["grad_norm"]
+    objectives = history["objective"]
+
+    for index in range(len(iterations)):
+        objective_gap = max(0.0, objectives[index] - reference_objective)
+        rows.append(
+            {
+                "analysis_type": analysis_type,
+                "parameter_name": parameter_name,
+                "parameter_value": parameter_value,
+                "method": result.method,
+                "epsilon": epsilon,
+                "output_weight_count": output_weight_count(instance),
+                "condition_number": spectral.condition_estimate,
+                "iteration": int(iterations[index]),
+                "relative_gap": objective_gap / denominator,
+                "gradient_norm": grad_norms[index],
+                "objective_gap_to_ldlt": objective_gap,
+            }
+        )
+
+    return rows
 
 
 def requested_all_rho_values():
@@ -3703,6 +4533,7 @@ class RealComparisonInstance:
         lambda_reg,
         hidden_width,
         n_features,
+        n_test,
     ):
         self.dataset_name = dataset_name
         self.y_train = y_train
@@ -3712,6 +4543,7 @@ class RealComparisonInstance:
         self.hidden_width = hidden_width
         self.n_features = n_features
         self.n_train = h_train_aug.shape[1]
+        self.n_test = n_test
         self.n_classes = y_train.shape[0]
 
 
@@ -3896,6 +4728,7 @@ def create_real_comparison_instance(dataset_name, target_output_weights, seed):
         1e-2,
         hidden_width,
         n_features,
+        x_test.shape[1],
     )
     return instance
 
@@ -4151,58 +4984,61 @@ def plot_real_pytorch_time_vs_epsilon_extreme_hidden_sizes(rows, figures_dir):
     plt.close(fig)
 
 def run_ldlt_scipy_comparison(output_weight_values, seed):
-    """Compare our LDLT with SciPy LDLT on real and controlled cases."""
+    """Compare our LDLT with SciPy LDLT on Wine and Digits."""
 
     check_sklearn_available()
     check_scipy_available()
 
-    rows = []
-    real_rows = run_real_ldlt_scipy_comparison(output_weight_values, seed)
-    known_rows = run_known_solution_ldlt_scipy_comparison(seed + 10000)
-    rows.extend(real_rows)
-    rows.extend(known_rows)
-    return rows
+    return run_real_ldlt_scipy_comparison(output_weight_values, seed)
 
 
 def run_real_ldlt_scipy_comparison(output_weight_values, seed):
     """Compare our LDLT with SciPy LDLT on Wine and Digits.
 
-    Only the smallest requested output-weight size is used here. Both methods
-    factorize the primal ELM matrix Q, whose size is hidden_width + 1 because
-    the augmented hidden matrix includes the output bias row.
+    The analysis uses three output-weight sizes, ending at about 10000 output
+    weights. This gives hidden_width 3333 for Wine and 1000 for Digits in the
+    largest case.
     """
 
     rows = []
     dataset_names = ["wine", "digits"]
-    output_weight_count_value = output_weight_values[0]
+    output_weight_count_values = ldlt_scipy_output_weight_values()
 
     for dataset_index in range(len(dataset_names)):
         dataset_name = dataset_names[dataset_index]
+        dataset_seed = seed + 500 + 100 * dataset_index
 
-        instance = create_real_comparison_instance(
-            dataset_name,
-            output_weight_count_value,
-            seed + 500 + 100 * dataset_index,
-        )
+        for size_index in range(len(output_weight_count_values)):
+            output_weight_count_value = output_weight_count_values[size_index]
 
-        q, c = build_primal_elm_system(instance)
+            instance = create_real_comparison_instance(
+                dataset_name,
+                output_weight_count_value,
+                dataset_seed,
+            )
 
-        our_row, our_weights = solve_real_primal_with_our_ldlt(
-            instance,
-            q,
-            c,
-        )
-        rows.append(our_row)
+            q, c = build_primal_elm_system(instance)
 
-        scipy_row, scipy_weights = solve_real_primal_with_scipy_ldlt(
-            instance,
-            q,
-            c,
-            our_weights,
-        )
-        rows.append(scipy_row)
+            our_row, our_weights = solve_real_primal_with_our_ldlt(
+                instance,
+                q,
+                c,
+            )
+            rows.append(our_row)
+
+            scipy_row, scipy_weights = solve_real_primal_with_scipy_ldlt(
+                instance,
+                q,
+                c,
+                our_weights,
+            )
+            rows.append(scipy_row)
 
     return rows
+
+
+def ldlt_scipy_output_weight_values():
+    return [2500, 5000, 10000]
 
 
 def build_primal_elm_system(instance):
@@ -4222,6 +5058,7 @@ def solve_real_primal_with_our_ldlt(instance, q, c):
     minimum_value = objective_value_from_h(weights, instance)
     residual = weights @ q - c
     residual_norm = float(np.sqrt(np.sum(residual * residual)))
+    relative_residual = relative_residual_norm(residual, c)
 
     row = {
         "dataset": instance.dataset_name,
@@ -4233,6 +5070,7 @@ def solve_real_primal_with_our_ldlt(instance, q, c):
         "minimum_value": minimum_value,
         "computational_time_seconds": elapsed,
         "residual_norm": residual_norm,
+        "relative_residual_norm": relative_residual,
         "absolute_error_to_known_optimum": "",
         "relative_error_to_known_optimum": "",
         "relative_difference_to_our_ldlt": 0.0,
@@ -4248,6 +5086,7 @@ def solve_real_primal_with_scipy_ldlt(instance, q, c, our_weights):
     minimum_value = objective_value_from_h(weights, instance)
     residual = weights @ q - c
     residual_norm = float(np.sqrt(np.sum(residual * residual)))
+    relative_residual = relative_residual_norm(residual, c)
 
     row = {
         "dataset": instance.dataset_name,
@@ -4259,6 +5098,7 @@ def solve_real_primal_with_scipy_ldlt(instance, q, c, our_weights):
         "minimum_value": minimum_value,
         "computational_time_seconds": elapsed,
         "residual_norm": residual_norm,
+        "relative_residual_norm": relative_residual,
         "absolute_error_to_known_optimum": "",
         "relative_error_to_known_optimum": "",
         "relative_difference_to_our_ldlt": relative_error(weights, our_weights),
@@ -4266,103 +5106,18 @@ def solve_real_primal_with_scipy_ldlt(instance, q, c, our_weights):
     return row, weights
 
 
-def run_known_solution_ldlt_scipy_comparison(seed):
-    """Synthetic primal ELM system where the exact optimum is known.
-
-    First we build an augmented hidden matrix H and the corresponding primal
-    matrix Q = H H^T / n + lambda I. Then we choose W_star and set C = W_star Q.
-    In this way the exact solution of W Q = C is W_star, so the test checks the
-    numerical accuracy of our LDLT against SciPy LDLT.
-    """
-
-    rng = np.random.default_rng(seed)
-    q_dimension = 160
-    n_outputs = 6
-    hidden_width = q_dimension - 1
-    n_samples = 4 * q_dimension
-    lambda_reg = 0.25
-
-    hidden_values = rng.normal(size=(hidden_width, n_samples))
-    bias_row = np.ones((1, n_samples))
-    h_aug = np.vstack([hidden_values, bias_row])
-
-    q = (h_aug @ h_aug.T) / float(n_samples)
-    q = q + lambda_reg * np.eye(q_dimension)
-    true_weights = rng.normal(size=(n_outputs, q_dimension))
-    c = true_weights @ q
-
-    our_result = ldlt_solve_weights(q, c)
-    scipy_result = scipy_ldlt_reference(q, c)
-
-    rows = []
-    rows.append(
-        make_known_solution_ldlt_row(
-            "LDLT",
-            our_result.weights,
-            q,
-            c,
-            true_weights,
-            our_result.elapsed_seconds,
-            hidden_width,
-            n_outputs,
-            our_result.weights,
-        )
-    )
-    rows.append(
-        make_known_solution_ldlt_row(
-            "SciPy LDLT",
-            scipy_result.weights,
-            q,
-            c,
-            true_weights,
-            scipy_result.elapsed_seconds,
-            hidden_width,
-            n_outputs,
-            our_result.weights,
-        )
-    )
-    return rows
-
-
-def make_known_solution_ldlt_row(
-    method,
-    weights,
-    q,
-    c,
-    true_weights,
-    elapsed,
-    hidden_width,
-    n_outputs,
-    our_weights,
-):
-    residual = weights @ q - c
+def relative_residual_norm(residual, c):
     residual_norm = float(np.sqrt(np.sum(residual * residual)))
-    difference = weights - true_weights
-    absolute_error = float(np.sqrt(np.sum(difference * difference)))
-    relative_known_error = relative_error(weights, true_weights)
-
-    minimum_value = quadratic_objective_value(weights, q, c)
-
-    return {
-        "dataset": "synthetic_known_optimum",
-        "case_type": "known_solution",
-        "algorithm": method,
-        "hidden_layer_size": hidden_width,
-        "output_weight_count": hidden_width * n_outputs,
-        "q_dimension": q.shape[0],
-        "minimum_value": minimum_value,
-        "computational_time_seconds": elapsed,
-        "residual_norm": residual_norm,
-        "absolute_error_to_known_optimum": absolute_error,
-        "relative_error_to_known_optimum": relative_known_error,
-        "relative_difference_to_our_ldlt": relative_error(weights, our_weights),
-    }
+    c_norm = float(np.sqrt(np.sum(c * c)))
+    if c_norm <= 1e-15:
+        return residual_norm
+    return residual_norm / c_norm
 
 
-def quadratic_objective_value(weights, q, c):
-    quadratic_part = 0.5 * np.sum((weights @ q) * weights)
-    linear_part = np.sum(c * weights)
-    return float(quadratic_part - linear_part)
+def remove_old_ldlt_scipy_synthetic_outputs(figures_dir):
+    path = figures_dir / "ldlt_scipy_known_solution_accuracy.png"
+    if path.exists():
+        path.unlink()
 
 
 def plot_ldlt_scipy_time_bars(rows, figures_dir):
@@ -4372,27 +5127,44 @@ def plot_ldlt_scipy_time_bars(rows, figures_dir):
         return
 
     methods = ["LDLT", "SciPy LDLT"]
-    case_names = []
+    cases = []
     case_labels = []
 
-    preferred_order = ["wine", "digits", "synthetic_known_optimum"]
+    preferred_order = ["wine", "digits"]
     for dataset_name in preferred_order:
+        hidden_sizes = []
         for row in rows:
-            if row["dataset"] == dataset_name and dataset_name not in case_names:
-                case_names.append(dataset_name)
-                case_labels.append(label_for_ldlt_case(row))
+            if row["dataset"] == dataset_name:
+                hidden_size = int(float(row["hidden_layer_size"]))
+                if hidden_size not in hidden_sizes:
+                    hidden_sizes.append(hidden_size)
+        hidden_sizes.sort()
 
-    x_values = np.arange(len(case_names), dtype=float)
+        for hidden_size in hidden_sizes:
+            cases.append(
+                {
+                    "dataset": dataset_name,
+                    "hidden_size": hidden_size,
+                }
+            )
+            case_labels.append(label_for_ldlt_case(dataset_name, hidden_size))
+
+    x_values = np.arange(len(cases), dtype=float)
     bar_width = 0.34
-    fig, axis = plt.subplots(figsize=(9.5, 4.8))
+    fig, axis = plt.subplots(figsize=(11.5, 4.9))
 
     for method_index in range(len(methods)):
         method = methods[method_index]
         times = []
-        for dataset_name in case_names:
+        for case in cases:
             value = np.nan
             for row in rows:
-                if row["dataset"] == dataset_name and row["algorithm"] == method:
+                same_dataset = row["dataset"] == case["dataset"]
+                same_method = row["algorithm"] == method
+                same_hidden = (
+                    int(float(row["hidden_layer_size"])) == case["hidden_size"]
+                )
+                if same_dataset and same_method and same_hidden:
                     value = max(float(row["computational_time_seconds"]), 1e-12)
             times.append(value)
 
@@ -4418,51 +5190,9 @@ def plot_ldlt_scipy_time_bars(rows, figures_dir):
     plt.close(fig)
 
 
-def label_for_ldlt_case(row):
-    if row["dataset"] == "wine":
-        return "Wine\nQ=" + str(row["q_dimension"])
-    if row["dataset"] == "digits":
-        return "Digits\nQ=" + str(row["q_dimension"])
-    return "Known optimum\nQ=" + str(row["q_dimension"])
-
-
-def plot_ldlt_known_solution_accuracy(rows, figures_dir):
-    """Plot accuracy on the synthetic known-optimum system."""
-
-    selected = []
-    for row in rows:
-        if row["case_type"] == "known_solution":
-            selected.append(row)
-
-    if len(selected) == 0:
-        return
-
-    methods = []
-    relative_errors = []
-    residual_norms = []
-    for row in selected:
-        methods.append(row["algorithm"])
-        relative_errors.append(max(float(row["relative_error_to_known_optimum"]), 1e-18))
-        residual_norms.append(max(float(row["residual_norm"]), 1e-18))
-
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2))
-
-    axes[0].bar(methods, relative_errors, color=["#4c78a8", "#e45756"])
-    axes[0].set_yscale("log")
-    axes[0].set_ylabel("Relative error to known optimum")
-    axes[0].set_title("Known W* Error")
-    axes[0].grid(True, axis="y", which="both", alpha=0.3)
-
-    axes[1].bar(methods, residual_norms, color=["#4c78a8", "#e45756"])
-    axes[1].set_yscale("log")
-    axes[1].set_ylabel("Residual norm ||WQ - C||")
-    axes[1].set_title("Optimality Residual")
-    axes[1].grid(True, axis="y", which="both", alpha=0.3)
-
-    fig.suptitle("LDLT Accuracy on Synthetic Known-Optimum System")
-    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.90])
-    fig.savefig(figures_dir / "ldlt_scipy_known_solution_accuracy.png", dpi=160)
-    plt.close(fig)
+def label_for_ldlt_case(dataset_name, hidden_size):
+    label = dataset_name.capitalize()
+    return label + "\nh=" + str(hidden_size)
 
 
 def estimate_real_comparison_spectral_bounds(instance):
@@ -4797,7 +5527,7 @@ def plot_handwritten_dimension_scaling_times(rows, figures_dir):
     axis.set_xlabel("Output weights")
     axis.set_ylabel("Computational time (seconds)")
     axis.set_title(
-        "Handwritten Algorithms Runtime Scaling, epsilon="
+        "Digits Handwritten Algorithms Runtime Scaling, epsilon="
         + format_epsilon_label(epsilon)
     )
     axis.grid(True, which="both", alpha=0.3)
@@ -4809,6 +5539,533 @@ def plot_handwritten_dimension_scaling_times(rows, figures_dir):
         dpi=160,
     )
     plt.close(fig)
+
+
+def plot_handwritten_dimension_scaling_histogram(rows, figures_dir):
+    """Bar plot of runtime for the latest Digits scaling experiment."""
+
+    if len(rows) == 0:
+        return
+
+    methods = ["LDLT", "Heavy Ball", "Nesterov"]
+    dimensions = unique_numeric_values(rows, "output_weight_count")
+    epsilon = float(rows[0]["epsilon"])
+
+    x_values = np.arange(len(dimensions), dtype=float)
+    bar_width = 0.25
+
+    fig, axis = plt.subplots(figsize=(9.5, 5.4))
+
+    for method_index in range(len(methods)):
+        method = methods[method_index]
+        times = []
+
+        for dimension in dimensions:
+            value = np.nan
+            for row in rows:
+                same_method = row["algorithm"] == method
+                same_dimension = (
+                    float(row["output_weight_count"]) == float(dimension)
+                )
+                if same_method and same_dimension:
+                    value = max(
+                        float(row["computational_time_seconds"]),
+                        1e-12,
+                    )
+                    break
+            times.append(value)
+
+        offset = (method_index - 1) * bar_width
+        axis.bar(
+            x_values + offset,
+            times,
+            width=bar_width,
+            label=method,
+            color=time_plot_color(method),
+            alpha=0.88,
+        )
+
+    x_labels = []
+    for dimension in dimensions:
+        x_labels.append(str(int(dimension)))
+
+    axis.set_yscale("log")
+    axis.set_xticks(x_values)
+    axis.set_xticklabels(x_labels)
+    axis.set_xlabel("Output weights")
+    axis.set_ylabel("Computational time (seconds)")
+    axis.set_title(
+        "Digits Runtime Histogram, epsilon="
+        + format_epsilon_label(epsilon)
+    )
+    axis.grid(True, axis="y", which="both", alpha=0.3)
+    axis.legend()
+
+    fig.tight_layout()
+    fig.savefig(
+        figures_dir / "handwritten_dimension_scaling_time_histogram.png",
+        dpi=160,
+    )
+    plt.close(fig)
+
+
+def plot_requested_real_digits_scratch_iterative_scaling(
+    rows,
+    epsilon,
+    path,
+):
+    """Rewrite the Digits scratch-iterative plot using the scaling sizes."""
+
+    if len(rows) == 0:
+        return
+
+    dimensions = unique_numeric_values(rows, "dimensionality")
+    methods = ["Heavy Ball", "Nesterov"]
+    colors = plt.get_cmap("tab10")
+
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 4.8))
+
+    for dim_index in range(len(dimensions)):
+        dimension = dimensions[dim_index]
+        color = colors(dim_index)
+
+        for method in methods:
+            selected = []
+            for row in rows:
+                same_method = row["method"] == method
+                same_dimension = (
+                    float(row["dimensionality"]) == float(dimension)
+                )
+                if same_method and same_dimension:
+                    selected.append(row)
+
+            selected.sort(key=lambda row: int(row["iteration"]))
+            if len(selected) == 0:
+                continue
+
+            iterations = [int(row["iteration"]) for row in selected]
+            relative_gaps = [
+                max(float(row["relative_gap"]), 1e-16)
+                for row in selected
+            ]
+            gradient_norms = [
+                max(float(row["gradient_norm"]), 1e-16)
+                for row in selected
+            ]
+
+            if method == "Heavy Ball":
+                linestyle = "-"
+                marker = "o"
+                short_method = "HB"
+            else:
+                linestyle = "--"
+                marker = "s"
+                short_method = "Nesterov"
+
+            label = short_method + ", weights=" + str(int(dimension))
+
+            axes[0].semilogy(
+                iterations,
+                relative_gaps,
+                label=label,
+                color=color,
+                linestyle=linestyle,
+                marker=marker,
+                markevery=2,
+                linewidth=2.0,
+                markersize=4,
+            )
+            axes[1].semilogy(
+                iterations,
+                gradient_norms,
+                label=label,
+                color=color,
+                linestyle=linestyle,
+                marker=marker,
+                markevery=2,
+                linewidth=2.0,
+                markersize=4,
+            )
+
+    axes[0].set_title("Relative Gap")
+    axes[0].set_xlabel("Iteration")
+    axes[0].set_ylabel("(f(W)-f*) / max(1, |f*|)")
+
+    axes[1].set_title("Gradient Norm")
+    axes[1].set_xlabel("Iteration")
+    axes[1].set_ylabel("||grad f(W)||_F")
+
+    for axis in axes:
+        axis.grid(True, which="both", alpha=0.3)
+        axis.legend(fontsize=7)
+
+    dimension_text = []
+    for dimension in dimensions:
+        dimension_text.append(str(int(dimension)))
+
+    fig.suptitle(
+        "Real Dataset Scratch Iterative Methods - digits / real_dataset\n"
+        + "epsilon="
+        + format_epsilon_label(epsilon)
+        + ", output weights="
+        + ", ".join(dimension_text)
+    )
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.86])
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def plot_synthetic_parameter_convergence(rows, analysis_type, path):
+    """Plot HB/Nesterov convergence while sparsity or rho changes."""
+
+    if len(rows) == 0:
+        return
+
+    if analysis_type == "sparsity":
+        parameter_label = "sparseness"
+    else:
+        parameter_label = "rho"
+
+    values = unique_numeric_values(rows, "parameter_value")
+    methods = ["Heavy Ball", "Nesterov"]
+    colors = plt.get_cmap("tab10")
+
+    fig, axes = plt.subplots(1, 2, figsize=(15.0, 5.2))
+
+    for value_index in range(len(values)):
+        value = values[value_index]
+        color = colors(value_index)
+
+        for method in methods:
+            selected = []
+            for row in rows:
+                same_method = row["method"] == method
+                same_value = (
+                    abs(float(row["parameter_value"]) - float(value)) <= 1e-15
+                )
+                if same_method and same_value:
+                    selected.append(row)
+
+            selected.sort(key=lambda row: int(row["iteration"]))
+            if len(selected) == 0:
+                continue
+
+            iterations = [int(row["iteration"]) for row in selected]
+            relative_gaps = [
+                max(float(row["relative_gap"]), 1e-16)
+                for row in selected
+            ]
+            gradient_norms = [
+                max(float(row["gradient_norm"]), 1e-16)
+                for row in selected
+            ]
+
+            if method == "Heavy Ball":
+                linestyle = "-"
+                marker = "o"
+                short_method = "HB"
+            else:
+                linestyle = "--"
+                marker = "s"
+                short_method = "Nesterov"
+
+            label = (
+                short_method
+                + ", "
+                + parameter_label
+                + "="
+                + format(float(value), ".1f")
+            )
+
+            axes[0].semilogy(
+                iterations,
+                relative_gaps,
+                label=label,
+                color=color,
+                linestyle=linestyle,
+                marker=marker,
+                markevery=3,
+                linewidth=1.8,
+                markersize=3.5,
+            )
+            axes[1].semilogy(
+                iterations,
+                gradient_norms,
+                label=label,
+                color=color,
+                linestyle=linestyle,
+                marker=marker,
+                markevery=3,
+                linewidth=1.8,
+                markersize=3.5,
+            )
+
+    axes[0].set_title("Relative Gap")
+    axes[0].set_xlabel("Iteration")
+    axes[0].set_ylabel("(f(W)-f*) / max(1, |f*|)")
+
+    axes[1].set_title("Gradient Norm")
+    axes[1].set_xlabel("Iteration")
+    axes[1].set_ylabel("||grad f(W)||_F")
+
+    for axis in axes:
+        axis.grid(True, which="both", alpha=0.3)
+        axis.legend(fontsize=6, ncol=2)
+
+    epsilon = float(rows[0]["epsilon"])
+    output_weight_count_value = int(float(rows[0]["output_weight_count"]))
+    title = (
+        "Synthetic "
+        + analysis_type.capitalize()
+        + " Sweep - Iterative Convergence\n"
+        + "epsilon="
+        + format_epsilon_label(epsilon)
+        + ", output weights="
+        + str(output_weight_count_value)
+    )
+    fig.suptitle(title)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.87])
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def plot_synthetic_parameter_convergence_by_value(
+    rows,
+    analysis_type,
+    shared_plot_seed,
+    figures_dir,
+):
+    """Create one convergence plot for each rho/sparsity value."""
+
+    if len(rows) == 0:
+        return
+
+    if analysis_type == "sparsity":
+        parameter_label = "sparseness"
+        filename_prefix = "synthetic_sparsity_convergence_"
+    else:
+        parameter_label = "rho"
+        filename_prefix = "synthetic_rho_convergence_"
+
+    values = unique_numeric_values(rows, "parameter_value")
+    methods = ["Heavy Ball", "Nesterov"]
+
+    for value in values:
+        fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6))
+
+        for method in methods:
+            selected = []
+            for row in rows:
+                same_method = row["method"] == method
+                same_value = (
+                    abs(float(row["parameter_value"]) - float(value)) <= 1e-15
+                )
+                if same_method and same_value:
+                    selected.append(row)
+
+            selected.sort(key=lambda row: int(row["iteration"]))
+            if len(selected) == 0:
+                continue
+
+            iterations = [int(row["iteration"]) for row in selected]
+            relative_gaps = [
+                max(float(row["relative_gap"]), 1e-16)
+                for row in selected
+            ]
+            gradient_norms = [
+                max(float(row["gradient_norm"]), 1e-16)
+                for row in selected
+            ]
+            style = plot_style_for_method(method)
+
+            axes[0].semilogy(
+                iterations,
+                relative_gaps,
+                label=method,
+                color=style["color"],
+                linestyle=style["linestyle"],
+                marker=style["marker"],
+                markevery=style["markevery"],
+                linewidth=style["linewidth"],
+            )
+            axes[1].semilogy(
+                iterations,
+                gradient_norms,
+                label=method,
+                color=style["color"],
+                linestyle=style["linestyle"],
+                marker=style["marker"],
+                markevery=style["markevery"],
+                linewidth=style["linewidth"],
+            )
+
+        axes[0].set_title("Relative Gap")
+        axes[0].set_xlabel("Iteration")
+        axes[0].set_ylabel("(f(W)-f*) / max(1, |f*|)")
+
+        axes[1].set_title("Gradient Norm")
+        axes[1].set_xlabel("Iteration")
+        axes[1].set_ylabel("||grad f(W)||_F")
+
+        for axis in axes:
+            axis.grid(True, which="both", alpha=0.3)
+            axis.legend()
+
+        epsilon = float(rows[0]["epsilon"])
+        output_weight_count_value = int(float(rows[0]["output_weight_count"]))
+        title = (
+            "Synthetic "
+            + analysis_type.capitalize()
+            + " Convergence, "
+            + parameter_label
+            + "="
+            + format(float(value), ".1f")
+            + "\n"
+            + "epsilon="
+            + format_epsilon_label(epsilon)
+            + ", output weights="
+            + str(output_weight_count_value)
+            + ", shared initialization seed="
+            + str(shared_plot_seed)
+        )
+        fig.suptitle(title)
+        fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.86])
+
+        filename = (
+            filename_prefix
+            + format_decimal_for_name(value)
+            + ".png"
+        )
+        fig.savefig(figures_dir / filename, dpi=160)
+        plt.close(fig)
+
+
+def plot_synthetic_parameter_time_histogram(rows, analysis_type, path):
+    """Bar plot of mean runtime for selected sparsity/rho values."""
+
+    if len(rows) == 0:
+        return
+
+    methods = ["LDLT", "Heavy Ball", "Nesterov"]
+    selected_values = synthetic_parameter_histogram_values()
+    bar_width = 0.25
+    x_values = np.arange(len(selected_values), dtype=float)
+
+    fig, axis = plt.subplots(figsize=(10.2, 5.4))
+
+    for method_index in range(len(methods)):
+        method = methods[method_index]
+        times = []
+
+        for value in selected_values:
+            found_time = np.nan
+            for row in rows:
+                same_method = row["algorithm"] == method
+                same_analysis = row["analysis_type"] == analysis_type
+                same_value = (
+                    abs(float(row["parameter_value"]) - float(value)) <= 1e-15
+                )
+                if same_analysis and same_method and same_value:
+                    found_time = max(
+                        float(row["mean_computational_time_seconds"]),
+                        1e-12,
+                    )
+                    break
+            times.append(found_time)
+
+        offset = (method_index - 1) * bar_width
+        axis.bar(
+            x_values + offset,
+            times,
+            width=bar_width,
+            label=method,
+            color=time_plot_color(method),
+            alpha=0.88,
+        )
+
+    x_labels = []
+    for value in selected_values:
+        x_labels.append(format(float(value), ".1f"))
+
+    if analysis_type == "sparsity":
+        xlabel = "sparseness"
+    else:
+        xlabel = "rho"
+
+    selected_rows = []
+    for row in rows:
+        if row["analysis_type"] == analysis_type:
+            selected_rows.append(row)
+
+    epsilon = float(selected_rows[0]["epsilon"])
+    output_weight_count_value = int(float(selected_rows[0]["output_weight_count"]))
+    axis.set_yscale("log")
+    axis.set_xticks(x_values)
+    axis.set_xticklabels(x_labels)
+    axis.set_xlabel(xlabel)
+    axis.set_ylabel("Computational time (seconds)")
+    axis.set_title(
+        "Synthetic "
+        + analysis_type.capitalize()
+        + " Sweep Runtime, epsilon="
+        + format_epsilon_label(epsilon)
+        + ", output weights="
+        + str(output_weight_count_value)
+    )
+    axis.grid(True, axis="y", which="both", alpha=0.3)
+    axis.legend()
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def remove_old_synthetic_parameter_outputs(output_dir, figures_dir):
+    """Remove old rho/sparsity outputs that overlap the new request."""
+
+    output_patterns = [
+        "requested_dimension_rho_times.csv",
+        "requested_dimension_sparsity_times.csv",
+        "requested_library_rho_times.csv",
+        "requested_library_sparsity_times.csv",
+        "rho_conditioning_sweep_summary.csv",
+        "rho_conditioning_sweep_history.csv",
+        "synthetic_rho_sweep_performance.csv",
+        "synthetic_rho_sweep_history.csv",
+        "synthetic_sparsity_sweep_performance.csv",
+        "synthetic_sparsity_sweep_history.csv",
+        "synthetic_parameter_sweep_aggregate.csv",
+        "synthetic_parameter_sweep_trials.csv",
+    ]
+    figure_patterns = [
+        "requested_conditioning_rho_*.png",
+        "requested_rho_time_comparison.png",
+        "requested_library_rho_*.png",
+        "conditioning_effect_rho_*.png",
+        "rho_conditioning_*.png",
+        "requested_sparsity_*.png",
+        "requested_library_sparsity_*.png",
+        "analysis_synthetic_sparse_parameter_epsilon_sweep.png",
+        "analysis_builtin_fixed_synthetic_synthetic_sparse_*.png",
+        "analysis_beta_fixed_variable_synthetic_sparse_*.png",
+        "requested_beta_sparse_70_percent.png",
+        "convergence_time_synthetic_sparse.png",
+        "synthetic_sparse_*.png",
+        "synthetic_rho_sweep_*.png",
+        "synthetic_sparsity_sweep_*.png",
+        "synthetic_rho_convergence_*.png",
+        "synthetic_sparsity_convergence_*.png",
+    ]
+
+    remove_paths_matching(output_dir, output_patterns)
+    remove_paths_matching(figures_dir, figure_patterns)
+
+
+def remove_paths_matching(base_dir, patterns):
+    for pattern in patterns:
+        for path in base_dir.glob(pattern):
+            if path.is_file():
+                path.unlink()
 
 
 def plot_requested_parameter_history(
