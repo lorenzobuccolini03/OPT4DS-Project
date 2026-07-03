@@ -514,6 +514,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--only-nesterov-beta-size-comparison",
+        action="store_true",
+        help=(
+            "Run only the fixed-beta versus variable-beta Nesterov comparison "
+            "for three larger hidden layer sizes."
+        ),
+    )
+    parser.add_argument(
         "--synthetic-init-trials",
         type=int,
         default=100,
@@ -714,6 +722,28 @@ def main():
 
         print("Wrote " + str(aggregate_path))
         print("Wrote " + str(trial_path))
+        return
+
+    if args.only_nesterov_beta_size_comparison:
+        max_iter = choose_max_iter(args.suite, args.max_iter)
+        remove_old_nesterov_beta_size_outputs(output_dir, figures_dir)
+        rows, history_rows = run_requested_beta_comparisons(
+            args.suite,
+            args.seed,
+            args.tol,
+            max_iter,
+            args.record_every,
+            figures_dir,
+        )
+
+        summary_path = output_dir / "nesterov_beta_size_comparison.csv"
+        history_path = output_dir / "nesterov_beta_size_comparison_history.csv"
+        write_csv(summary_path, DETAILED_ANALYSIS_FIELDS, rows)
+        write_csv(history_path, DETAILED_HISTORY_FIELDS, history_rows)
+        plot_beta_fixed_variable_analysis(history_rows, figures_dir)
+
+        print("Wrote " + str(summary_path))
+        print("Wrote " + str(history_path))
         return
 
     max_iter = choose_max_iter(args.suite, args.max_iter)
@@ -1135,7 +1165,7 @@ def add_sparse_scenarios(scenarios, suite, seed):
         scenarios.append(scenario)
 
 
-def add_real_wine_scenario(scenarios, suite, seed):
+def add_real_wine_scenario(scenarios, suite, seed, hidden_width_override=None):
     """Real dataset case based on the Wine classification dataset.
 
     A real dataset is included to check that the code is not tuned only to
@@ -1157,7 +1187,9 @@ def add_real_wine_scenario(scenarios, suite, seed):
         stratify=labels,
     )
 
-    if suite == "full":
+    if hidden_width_override is not None:
+        hidden_width = hidden_width_override
+    elif suite == "full":
         hidden_width = 80
     else:
         hidden_width = 50
@@ -1188,7 +1220,7 @@ def add_real_wine_scenario(scenarios, suite, seed):
     scenarios.append(scenario)
 
 
-def add_real_digits_scenario(scenarios, suite, seed):
+def add_real_digits_scenario(scenarios, suite, seed, hidden_width_override=None):
     """Real handwritten-digit dataset.
 
     Digits is now included in both the quick and the full suite, so all
@@ -1209,7 +1241,9 @@ def add_real_digits_scenario(scenarios, suite, seed):
         stratify=labels,
     )
 
-    if suite == "full":
+    if hidden_width_override is not None:
+        hidden_width = hidden_width_override
+    elif suite == "full":
         hidden_width = 120
     else:
         hidden_width = 80
@@ -2798,22 +2832,42 @@ def run_beta_fixed_variable_analysis(
 
     rows = []
     histories = []
-    config = fixed_dimension_config(suite)
+    scenarios = []
+    hidden_sizes = nesterov_beta_hidden_sizes()
+    scenario_seed = seed
 
-    scenarios = [
-        create_synthetic_analysis_scenario("well", 0.1, config, seed),
-        create_synthetic_analysis_scenario("ill", 0.9, config, seed + 1),
-        create_synthetic_analysis_scenario("sparse", 0.7, config, seed + 2),
+    synthetic_cases = [
+        ("well", 0.1),
+        ("ill", 0.9),
+        ("sparse", 0.7),
     ]
-    add_real_wine_scenario(scenarios, suite, seed + 3)
-    add_real_digits_scenario(scenarios, suite, seed + 4)
+
+    for case_index in range(len(synthetic_cases)):
+        kind, sweep_value = synthetic_cases[case_index]
+        for hidden_width in hidden_sizes:
+            config = nesterov_beta_synthetic_config(hidden_width)
+            scenario = create_synthetic_analysis_scenario(
+                kind,
+                sweep_value,
+                config,
+                scenario_seed,
+            )
+            add_hidden_size_to_scenario_name(scenario, hidden_width)
+            scenarios.append(scenario)
+            scenario_seed += 1
+
+    for hidden_width in hidden_sizes:
+        add_real_wine_scenario(scenarios, suite, scenario_seed, hidden_width)
+        add_hidden_size_to_scenario_name(scenarios[-1], hidden_width)
+        scenario_seed += 1
+
+    for hidden_width in hidden_sizes:
+        add_real_digits_scenario(scenarios, suite, scenario_seed, hidden_width)
+        add_hidden_size_to_scenario_name(scenarios[-1], hidden_width)
+        scenario_seed += 1
 
     for index in range(len(scenarios)):
         scenario = scenarios[index]
-        if "sweep_parameter" not in scenario:
-            scenario["sweep_parameter"] = "dataset"
-            scenario["sweep_value"] = scenario["dataset_name"]
-
         context = prepare_analysis_context(scenario, seed + index)
 
         unused_hb, nag_result = run_scratch_iterative_methods(
@@ -2836,8 +2890,8 @@ def run_beta_fixed_variable_analysis(
             context,
             nag_result,
             epsilon,
-            scenario["sweep_parameter"],
-            scenario["sweep_value"],
+            "hidden_width",
+            context["instance"].hidden_width,
         )
         append_analysis_result(
             rows,
@@ -2846,8 +2900,8 @@ def run_beta_fixed_variable_analysis(
             context,
             variable_result,
             epsilon,
-            scenario["sweep_parameter"],
-            scenario["sweep_value"],
+            "hidden_width",
+            context["instance"].hidden_width,
         )
 
     return rows, histories
@@ -3204,14 +3258,23 @@ def run_requested_test_analyses(
         ldlt_builtin_rows,
     )
 
-    run_requested_beta_comparisons(
-        fixed_config,
+    beta_rows, beta_history_rows = run_requested_beta_comparisons(
         suite,
         seed + 900,
         epsilon,
         max_iter,
         record_every,
         figures_dir,
+    )
+    write_csv(
+        output_dir / "nesterov_beta_size_comparison.csv",
+        DETAILED_ANALYSIS_FIELDS,
+        beta_rows,
+    )
+    write_csv(
+        output_dir / "nesterov_beta_size_comparison_history.csv",
+        DETAILED_HISTORY_FIELDS,
+        beta_history_rows,
     )
 
     real_time_rows = run_requested_real_dataset_analysis(
@@ -3274,6 +3337,44 @@ def requested_dimension_configs(suite):
             }
         )
     return configs
+
+
+def nesterov_beta_hidden_sizes():
+    """Hidden sizes used in the fixed-beta versus variable-beta comparison."""
+
+    return [100, 250, 500]
+
+
+def nesterov_beta_synthetic_config(hidden_width):
+    """Dimension of the synthetic beta-comparison problems.
+
+    The ELM hidden layer is random and fixed. The optimized variable is the
+    output matrix, so with 100 classes these three hidden sizes correspond to
+    10000, 25000, and 50000 hidden-to-output weights.
+    """
+
+    n_classes = 100
+    return {
+        "n_train": 1000,
+        "n_test": 350,
+        "n_features": 100,
+        "n_classes": n_classes,
+        "target_output_weights": hidden_width * n_classes,
+    }
+
+
+def add_hidden_size_to_scenario_name(scenario, hidden_width):
+    """Make the hidden size visible in tables and plot file names."""
+
+    scenario["scenario_type"] = (
+        scenario["scenario_type"] + "_hidden_" + str(hidden_width)
+    )
+    scenario["description"] = (
+        scenario["description"]
+        + " Fixed/variable beta comparison with hidden width "
+        + str(hidden_width)
+        + "."
+    )
 
 
 def handwritten_dimension_scaling_configs():
@@ -4400,7 +4501,6 @@ def run_requested_ldlt_builtin_times(dimension_configs, seed):
 
 
 def run_requested_beta_comparisons(
-    fixed_config,
     suite,
     seed,
     epsilon,
@@ -4408,64 +4508,241 @@ def run_requested_beta_comparisons(
     record_every,
     figures_dir,
 ):
-    cases = [
+    rows = []
+    histories = []
+    case_groups = build_nesterov_beta_case_groups(suite, seed)
+
+    for group_index in range(len(case_groups)):
+        case_title, filename, scenarios = case_groups[group_index]
+        plot_items = []
+
+        for scenario_index in range(len(scenarios)):
+            scenario = scenarios[scenario_index]
+            context, fixed_result, variable_result = run_nesterov_beta_pair(
+                scenario,
+                seed + group_index * 100 + scenario_index,
+                epsilon,
+                max_iter,
+                record_every,
+            )
+
+            append_analysis_result(
+                rows,
+                histories,
+                "beta_fixed_vs_variable",
+                context,
+                fixed_result,
+                epsilon,
+                "hidden_width",
+                context["instance"].hidden_width,
+            )
+            append_analysis_result(
+                rows,
+                histories,
+                "beta_fixed_vs_variable",
+                context,
+                variable_result,
+                epsilon,
+                "hidden_width",
+                context["instance"].hidden_width,
+            )
+
+            plot_items.append(
+                {
+                    "context": context,
+                    "results": [fixed_result, variable_result],
+                }
+            )
+
+        plot_requested_beta_size_grid(
+            plot_items,
+            epsilon,
+            figures_dir / filename,
+            case_title,
+        )
+
+    return rows, histories
+
+
+def build_nesterov_beta_case_groups(suite, seed):
+    """Create the five beta-comparison groups at three hidden sizes."""
+
+    hidden_sizes = nesterov_beta_hidden_sizes()
+    case_groups = []
+    scenario_seed = seed
+
+    synthetic_definitions = [
         (
-            create_synthetic_analysis_scenario(
-                "well",
-                0.1,
-                fixed_config,
-                seed,
-            ),
+            "Synthetic well-conditioned",
             "requested_beta_well_conditioned.png",
+            "well",
+            0.1,
         ),
         (
-            create_synthetic_analysis_scenario(
-                "ill",
-                0.9,
-                fixed_config,
-                seed + 1,
-            ),
+            "Synthetic ill-conditioned",
             "requested_beta_ill_conditioned.png",
+            "ill",
+            0.9,
         ),
         (
-            create_synthetic_analysis_scenario(
-                "sparse",
-                0.7,
-                fixed_config,
-                seed + 2,
-            ),
+            "Synthetic sparse, zero probability 0.7",
             "requested_beta_sparse_70_percent.png",
+            "sparse",
+            0.7,
         ),
     ]
 
-    real_scenarios = []
-    add_real_wine_scenario(real_scenarios, suite, seed + 3)
-    add_real_digits_scenario(real_scenarios, suite, seed + 4)
-    cases.append((real_scenarios[0], "requested_beta_wine.png"))
-    cases.append((real_scenarios[1], "requested_beta_digits.png"))
+    for definition in synthetic_definitions:
+        title, filename, kind, sweep_value = definition
+        scenarios = []
+        for hidden_width in hidden_sizes:
+            config = nesterov_beta_synthetic_config(hidden_width)
+            scenario = create_synthetic_analysis_scenario(
+                kind,
+                sweep_value,
+                config,
+                scenario_seed,
+            )
+            add_hidden_size_to_scenario_name(scenario, hidden_width)
+            scenarios.append(scenario)
+            scenario_seed += 1
+        case_groups.append((title, filename, scenarios))
 
-    for index in range(len(cases)):
-        scenario, filename = cases[index]
-        context = prepare_analysis_context(scenario, seed + index)
-        unused_hb, fixed_result = run_scratch_iterative_methods(
-            context,
-            epsilon,
-            max_iter,
-            record_every,
+    wine_scenarios = []
+    for hidden_width in hidden_sizes:
+        temporary = []
+        add_real_wine_scenario(temporary, suite, scenario_seed, hidden_width)
+        add_hidden_size_to_scenario_name(temporary[0], hidden_width)
+        wine_scenarios.append(temporary[0])
+        scenario_seed += 1
+    case_groups.append(("Wine real dataset", "requested_beta_wine.png", wine_scenarios))
+
+    digits_scenarios = []
+    for hidden_width in hidden_sizes:
+        temporary = []
+        add_real_digits_scenario(temporary, suite, scenario_seed, hidden_width)
+        add_hidden_size_to_scenario_name(temporary[0], hidden_width)
+        digits_scenarios.append(temporary[0])
+        scenario_seed += 1
+    case_groups.append(("Digits real dataset", "requested_beta_digits.png", digits_scenarios))
+
+    return case_groups
+
+
+def run_nesterov_beta_pair(
+    scenario,
+    seed,
+    epsilon,
+    max_iter,
+    record_every,
+):
+    """Run only the two Nesterov variants needed for this comparison."""
+
+    context = prepare_analysis_context(scenario, seed)
+    unused_hb, fixed_result = run_scratch_iterative_methods(
+        context,
+        epsilon,
+        max_iter,
+        record_every,
+    )
+    variable_result = run_variable_nesterov_method(
+        context,
+        epsilon,
+        max_iter,
+        record_every,
+    )
+    return context, fixed_result, variable_result
+
+
+def plot_requested_beta_size_grid(plot_items, epsilon, path, title):
+    """Plot fixed-beta and variable-beta Nesterov for several hidden sizes."""
+
+    if len(plot_items) == 0:
+        return
+
+    metrics = [
+        ("grad_norm", "Gradient Norm", "||grad f(W)||_F"),
+        ("objective", "Objective Gap", "f(W) - f(W_ref)"),
+        ("relative_error", "Relative Error", "||W - W_ref|| / ||W_ref||"),
+    ]
+
+    fig, axes = plt.subplots(
+        len(plot_items),
+        3,
+        figsize=(15.5, 4.1 * len(plot_items)),
+        squeeze=False,
+    )
+
+    for row_index in range(len(plot_items)):
+        item = plot_items[row_index]
+        context = item["context"]
+        instance = context["instance"]
+        reference_objective = context["reference_objective"]
+
+        row_label = (
+            "hidden="
+            + str(instance.hidden_width)
+            + ", output weights="
+            + str(output_weight_count(instance))
+            + ", Q dim="
+            + str(instance.q.shape[0])
         )
-        variable_result = run_variable_nesterov_method(
-            context,
-            epsilon,
-            max_iter,
-            record_every,
-        )
-        plot_requested_two_results(
-            context,
-            [fixed_result, variable_result],
-            epsilon,
-            figures_dir / filename,
-            "Nesterov Fixed Beta vs Variable Beta",
-        )
+
+        for metric_index in range(len(metrics)):
+            field, metric_title, ylabel = metrics[metric_index]
+            axis = axes[row_index][metric_index]
+
+            for result in item["results"]:
+                history = result.history
+                iterations = history["iteration"]
+
+                if field == "grad_norm":
+                    values = history["grad_norm"]
+                elif field == "objective":
+                    values = []
+                    for value in history["objective"]:
+                        gap = max(0.0, value - reference_objective)
+                        values.append(gap)
+                else:
+                    values = history["relative_error"]
+
+                safe_values = []
+                for value in values:
+                    safe_values.append(max(float(value), metric_floor(field)))
+
+                style = plot_style_for_method(result.method)
+                axis.semilogy(
+                    iterations,
+                    safe_values,
+                    label=result.method,
+                    color=style["color"],
+                    linestyle=style["linestyle"],
+                    linewidth=style["linewidth"],
+                    marker=style["marker"],
+                    markevery=style["markevery"],
+                    alpha=style["alpha"],
+                )
+
+            if row_index == 0:
+                axis.set_title(metric_title)
+            axis.set_xlabel("Iteration")
+            if metric_index == 0:
+                axis.set_ylabel(row_label + "\n" + ylabel)
+            else:
+                axis.set_ylabel(ylabel)
+            axis.grid(True, which="both", alpha=0.3)
+            axis.legend()
+
+    subtitle = (
+        "Fixed beta vs variable beta, epsilon="
+        + format_epsilon_label(epsilon)
+        + ", hidden sizes="
+        + ", ".join(str(value) for value in nesterov_beta_hidden_sizes())
+    )
+    fig.suptitle(title + "\n" + subtitle)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
 
 
 def run_requested_real_dataset_analysis(
@@ -6055,6 +6332,22 @@ def remove_old_synthetic_parameter_outputs(output_dir, figures_dir):
         "synthetic_sparsity_sweep_*.png",
         "synthetic_rho_convergence_*.png",
         "synthetic_sparsity_convergence_*.png",
+    ]
+
+    remove_paths_matching(output_dir, output_patterns)
+    remove_paths_matching(figures_dir, figure_patterns)
+
+
+def remove_old_nesterov_beta_size_outputs(output_dir, figures_dir):
+    """Remove previous fixed/variable-beta outputs before regenerating them."""
+
+    output_patterns = [
+        "nesterov_beta_size_comparison.csv",
+        "nesterov_beta_size_comparison_history.csv",
+    ]
+    figure_patterns = [
+        "requested_beta_*.png",
+        "analysis_beta_fixed_variable_*.png",
     ]
 
     remove_paths_matching(output_dir, output_patterns)
