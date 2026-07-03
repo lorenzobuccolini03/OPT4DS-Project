@@ -3442,8 +3442,8 @@ def synthetic_parameter_sweep_config():
         "n_train": 1000,
         "n_test": 350,
         "n_features": 100,
-        "n_classes": 5000,
-        "target_output_weights": 100000,
+        "n_classes": 100,
+        "target_output_weights": 50000,
     }
 
 
