@@ -522,6 +522,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--only-nesterov-beta-focused-plots",
+        action="store_true",
+        help=(
+            "Run only the 2x2 fixed-beta versus variable-beta Nesterov plots "
+            "for hidden widths 100 and 500 at epsilon 1e-3 and 1e-6."
+        ),
+    )
+    parser.add_argument(
         "--synthetic-init-trials",
         type=int,
         default=100,
@@ -746,6 +754,26 @@ def main():
         print("Wrote " + str(history_path))
         return
 
+    if args.only_nesterov_beta_focused_plots:
+        max_iter = choose_nesterov_beta_focus_max_iter(args.max_iter)
+        remove_old_nesterov_beta_focus_outputs(output_dir, figures_dir)
+        rows, history_rows = run_nesterov_beta_focused_plots(
+            args.suite,
+            args.seed,
+            max_iter,
+            args.record_every,
+            figures_dir,
+        )
+
+        summary_path = output_dir / "nesterov_beta_focused_comparison.csv"
+        history_path = output_dir / "nesterov_beta_focused_comparison_history.csv"
+        write_csv(summary_path, DETAILED_ANALYSIS_FIELDS, rows)
+        write_csv(history_path, DETAILED_HISTORY_FIELDS, history_rows)
+
+        print("Wrote " + str(summary_path))
+        print("Wrote " + str(history_path))
+        return
+
     max_iter = choose_max_iter(args.suite, args.max_iter)
     scenarios = build_scenarios(args.suite, args.seed)
 
@@ -915,6 +943,14 @@ def choose_synthetic_parameter_sweep_max_iter(max_iter_override):
     if max_iter_override is not None:
         return max_iter_override
     return 5000
+
+
+def choose_nesterov_beta_focus_max_iter(max_iter_override):
+    """Iteration budget for the stricter 1e-6 beta-comparison plots."""
+
+    if max_iter_override is not None:
+        return max_iter_override
+    return 20000
 
 
 def build_scenarios(suite, seed):
@@ -3345,6 +3381,18 @@ def nesterov_beta_hidden_sizes():
     return [100, 250, 500]
 
 
+def nesterov_beta_focused_hidden_sizes():
+    """Hidden sizes used in the compact 2x2 beta plots."""
+
+    return [100, 500]
+
+
+def nesterov_beta_focused_epsilons():
+    """Tolerance values requested for the compact beta plots."""
+
+    return [1e-3, 1e-6]
+
+
 def nesterov_beta_synthetic_config(hidden_width):
     """Dimension of the synthetic beta-comparison problems.
 
@@ -4564,10 +4612,12 @@ def run_requested_beta_comparisons(
     return rows, histories
 
 
-def build_nesterov_beta_case_groups(suite, seed):
+def build_nesterov_beta_case_groups(suite, seed, hidden_sizes=None):
     """Create the five beta-comparison groups at three hidden sizes."""
 
-    hidden_sizes = nesterov_beta_hidden_sizes()
+    if hidden_sizes is None:
+        hidden_sizes = nesterov_beta_hidden_sizes()
+
     case_groups = []
     scenario_seed = seed
 
@@ -4741,6 +4791,175 @@ def plot_requested_beta_size_grid(plot_items, epsilon, path, title):
     )
     fig.suptitle(title + "\n" + subtitle)
     fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def run_nesterov_beta_focused_plots(
+    suite,
+    seed,
+    max_iter,
+    record_every,
+    figures_dir,
+):
+    """Create the requested 2x2 beta plots for two epsilons."""
+
+    rows = []
+    histories = []
+    epsilons = nesterov_beta_focused_epsilons()
+    hidden_sizes = nesterov_beta_focused_hidden_sizes()
+
+    for epsilon_index in range(len(epsilons)):
+        epsilon = epsilons[epsilon_index]
+        case_groups = build_nesterov_beta_case_groups(
+            suite,
+            seed + epsilon_index * 1000,
+            hidden_sizes,
+        )
+
+        for group_index in range(len(case_groups)):
+            case_title, filename, scenarios = case_groups[group_index]
+            plot_items = []
+
+            for scenario_index in range(len(scenarios)):
+                scenario = scenarios[scenario_index]
+                context, fixed_result, variable_result = run_nesterov_beta_pair(
+                    scenario,
+                    seed + epsilon_index * 1000 + group_index * 100 + scenario_index,
+                    epsilon,
+                    max_iter,
+                    record_every,
+                )
+
+                append_analysis_result(
+                    rows,
+                    histories,
+                    "beta_fixed_vs_variable_focused",
+                    context,
+                    fixed_result,
+                    epsilon,
+                    "hidden_width",
+                    context["instance"].hidden_width,
+                )
+                append_analysis_result(
+                    rows,
+                    histories,
+                    "beta_fixed_vs_variable_focused",
+                    context,
+                    variable_result,
+                    epsilon,
+                    "hidden_width",
+                    context["instance"].hidden_width,
+                )
+
+                plot_items.append(
+                    {
+                        "context": context,
+                        "results": [fixed_result, variable_result],
+                    }
+                )
+
+            output_name = focused_beta_filename(filename, epsilon)
+            plot_requested_beta_focus_grid(
+                plot_items,
+                epsilon,
+                figures_dir / output_name,
+                case_title,
+            )
+
+    return rows, histories
+
+
+def focused_beta_filename(filename, epsilon):
+    if filename.endswith(".png"):
+        base_name = filename[:-4]
+    else:
+        base_name = filename
+
+    epsilon_text = format_epsilon_label(epsilon)
+    return base_name + "_focused_epsilon_" + epsilon_text + ".png"
+
+
+def beta_plot_label(method):
+    if method == "Nesterov":
+        return "Nesterov fixed beta"
+    return method
+
+
+def plot_requested_beta_focus_grid(plot_items, epsilon, path, title):
+    """Plot only Gradient Norm and Relative Gap in a compact 2x2 grid."""
+
+    if len(plot_items) == 0:
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(12.0, 8.0), squeeze=False)
+    metrics = [
+        ("grad_norm", "Gradient Norm", "||grad f(W)||_F"),
+        ("relative_gap", "Relative Gap", "(f(W) - f*) / max(1, |f*|)"),
+    ]
+
+    for row_index in range(len(plot_items)):
+        item = plot_items[row_index]
+        context = item["context"]
+        instance = context["instance"]
+        reference_objective = context["reference_objective"]
+        denominator = max(1.0, abs(reference_objective))
+
+        for metric_index in range(len(metrics)):
+            field, metric_title, ylabel = metrics[metric_index]
+            axis = axes[row_index][metric_index]
+
+            for result in item["results"]:
+                history = result.history
+                iterations = history["iteration"]
+
+                if field == "grad_norm":
+                    values = history["grad_norm"]
+                else:
+                    values = []
+                    for objective in history["objective"]:
+                        gap = max(0.0, objective - reference_objective)
+                        values.append(gap / denominator)
+
+                safe_values = []
+                for value in values:
+                    safe_values.append(max(float(value), metric_floor(field)))
+
+                style = plot_style_for_method(result.method)
+                axis.semilogy(
+                    iterations,
+                    safe_values,
+                    label=beta_plot_label(result.method),
+                    color=style["color"],
+                    linestyle=style["linestyle"],
+                    linewidth=style["linewidth"],
+                    marker=style["marker"],
+                    markevery=style["markevery"],
+                    alpha=style["alpha"],
+                )
+
+            subplot_title = (
+                "hidden width="
+                + str(instance.hidden_width)
+                + ", output weights="
+                + str(output_weight_count(instance))
+                + "\n"
+                + metric_title
+            )
+            axis.set_title(subplot_title)
+            axis.set_xlabel("Iteration")
+            axis.set_ylabel(ylabel)
+            axis.grid(True, which="both", alpha=0.3)
+            axis.legend()
+
+    subtitle = (
+        "hidden width="
+        + ", ".join(str(value) for value in nesterov_beta_focused_hidden_sizes())
+        + ", epsilon="
+        + format_epsilon_label(epsilon)
+    )
+    fig.suptitle(title + "\n" + subtitle)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.91])
     fig.savefig(path, dpi=160)
     plt.close(fig)
 
@@ -6348,6 +6567,21 @@ def remove_old_nesterov_beta_size_outputs(output_dir, figures_dir):
     figure_patterns = [
         "requested_beta_*.png",
         "analysis_beta_fixed_variable_*.png",
+    ]
+
+    remove_paths_matching(output_dir, output_patterns)
+    remove_paths_matching(figures_dir, figure_patterns)
+
+
+def remove_old_nesterov_beta_focus_outputs(output_dir, figures_dir):
+    """Remove previous compact 2x2 beta plots before regenerating them."""
+
+    output_patterns = [
+        "nesterov_beta_focused_comparison.csv",
+        "nesterov_beta_focused_comparison_history.csv",
+    ]
+    figure_patterns = [
+        "requested_beta_*_focused_epsilon_*.png",
     ]
 
     remove_paths_matching(output_dir, output_patterns)
