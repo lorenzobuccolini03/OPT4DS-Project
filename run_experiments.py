@@ -369,6 +369,17 @@ REQUESTED_REAL_TIME_FIELDS = [
     "computational_time",
 ]
 
+REQUESTED_ITERATIVE_HISTORY_FIELDS = [
+    "method",
+    "iteration",
+    "gradient_norm",
+    "relative_gap",
+    "parameter_name",
+    "parameter_value",
+    "dimensionality",
+    "epsilon",
+]
+
 REAL_PYTORCH_COMPARISON_FIELDS = [
     "algorithm",
     "dataset",
@@ -657,7 +668,13 @@ def main():
         remove_old_dimension_scaling_outputs(output_dir, figures_dir)
 
         output_path = output_dir / "handwritten_dimension_scaling_times.csv"
+        scratch_history_path = output_dir / "requested_real_digits_scratch_iterative.csv"
         write_csv(output_path, HANDWRITTEN_DIMENSION_SCALING_FIELDS, rows)
+        write_csv(
+            scratch_history_path,
+            REQUESTED_ITERATIVE_HISTORY_FIELDS,
+            scratch_history_rows,
+        )
         plot_handwritten_dimension_scaling_times(rows, figures_dir)
         plot_handwritten_dimension_scaling_histogram(rows, figures_dir)
         plot_requested_real_digits_scratch_iterative_scaling(
@@ -667,6 +684,7 @@ def main():
         )
 
         print("Wrote " + str(output_path))
+        print("Wrote " + str(scratch_history_path))
         return
 
     if args.only_synthetic_parameter_sweeps:
@@ -6165,6 +6183,7 @@ def remove_old_dimension_scaling_outputs(output_dir, figures_dir):
 
     csv_names = [
         "requested_dimension_scaling_times.csv",
+        "requested_real_digits_scratch_iterative.csv",
     ]
     figure_names = [
         "requested_dimension_scaling_times.png",
