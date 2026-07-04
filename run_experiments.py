@@ -514,6 +514,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--only-synthetic-rho-converged-plots",
+        action="store_true",
+        help=(
+            "Regenerate only the synthetic rho convergence plots, selecting "
+            "a plot run where both Heavy Ball and Nesterov converge."
+        ),
+    )
+    parser.add_argument(
         "--only-nesterov-beta-size-comparison",
         action="store_true",
         help=(
@@ -662,7 +670,7 @@ def main():
         return
 
     if args.only_synthetic_parameter_sweeps:
-        epsilon = 1e-3
+        epsilon = args.tol
         sweep_max_iter = choose_synthetic_parameter_sweep_max_iter(args.max_iter)
         initialization_trials = args.synthetic_init_trials
         shared_plot_seed = args.seed + 910000
@@ -730,6 +738,30 @@ def main():
 
         print("Wrote " + str(aggregate_path))
         print("Wrote " + str(trial_path))
+        return
+
+    if args.only_synthetic_rho_converged_plots:
+        epsilon = args.tol
+        sweep_max_iter = choose_synthetic_parameter_sweep_max_iter(args.max_iter)
+        shared_plot_seed = args.seed + 910000
+        rho_plot_history = run_synthetic_rho_converged_plot_history(
+            seed=args.seed + 4000,
+            epsilon=epsilon,
+            max_iter=sweep_max_iter,
+            record_every=args.record_every,
+            shared_plot_seed=shared_plot_seed,
+        )
+        remove_paths_matching(
+            figures_dir,
+            ["synthetic_rho_convergence_*.png"],
+        )
+        plot_synthetic_parameter_convergence_by_value(
+            rho_plot_history,
+            "rho",
+            shared_plot_seed,
+            figures_dir,
+        )
+        print("Wrote synthetic rho convergence plots to " + str(figures_dir))
         return
 
     if args.only_nesterov_beta_size_comparison:
@@ -3752,33 +3784,20 @@ def run_synthetic_parameter_sweep(
                 )
             )
 
-        # These two runs are only for the convergence plots. The same initial
-        # weights are used for every rho/sparsity value, so the curves differ
-        # because of the generated problem, not because of W0.
-        shared_w0 = random_initial_weights(c.shape, shared_plot_seed)
-        hb_plot_result = heavy_ball(
-            q,
-            c,
-            shared_w0,
-            mu=spectral.mu,
-            l_smooth=spectral.l_smooth,
-            tol=epsilon,
-            max_iter=max_iter,
-            objective_fn=objective_fn,
-            reference_weights=reference_weights,
-            record_every=record_every,
-        )
-        nag_plot_result = nesterov_accelerated_gradient(
-            q,
-            c,
-            shared_w0,
-            mu=spectral.mu,
-            l_smooth=spectral.l_smooth,
-            tol=epsilon,
-            max_iter=max_iter,
-            objective_fn=objective_fn,
-            reference_weights=reference_weights,
-            record_every=record_every,
+        plot_seed, plot_max_iter, hb_plot_result, nag_plot_result = (
+            find_convergent_synthetic_plot_run(
+                analysis_type,
+                parameter_value,
+                q,
+                c,
+                spectral,
+                epsilon,
+                max_iter,
+                record_every,
+                objective_fn,
+                reference_weights,
+                shared_plot_seed,
+            )
         )
 
         plot_results = [hb_plot_result, nag_plot_result]
@@ -3793,10 +3812,185 @@ def run_synthetic_parameter_sweep(
                     spectral,
                     epsilon,
                     reference_objective,
+                    plot_seed,
+                    plot_max_iter,
                 )
             )
 
     return aggregate_rows, trial_rows, plot_history_rows
+
+
+def run_synthetic_rho_converged_plot_history(
+    seed,
+    epsilon,
+    max_iter,
+    record_every,
+    shared_plot_seed,
+):
+    """Regenerate only rho plot histories with converged plot runs."""
+
+    plot_history_rows = []
+    config = synthetic_parameter_sweep_config()
+    values = synthetic_parameter_sweep_values()
+
+    for index in range(len(values)):
+        rho = values[index]
+        print(
+            "Regenerating synthetic rho convergence plot: rho="
+            + format(rho, ".1f")
+        )
+
+        instance = create_conditioning_effect_instance(
+            rho,
+            config,
+            seed,
+        )
+        q = instance.q
+        c = instance.c
+        spectral = estimate_spectral_bounds(
+            q,
+            instance.lambda_reg,
+            seed=seed,
+            l_safety_factor=1.01,
+        )
+
+        def objective_fn(weights):
+            return objective_value(
+                weights,
+                instance.h_train_aug,
+                instance.y_train,
+                instance.lambda_reg,
+            )
+
+        ldlt_result = ldlt_solve_weights(q, c)
+        reference_weights = ldlt_result.weights
+        reference_objective = objective_fn(reference_weights)
+
+        plot_seed, plot_max_iter, hb_result, nag_result = (
+            find_convergent_synthetic_plot_run(
+                "rho",
+                rho,
+                q,
+                c,
+                spectral,
+                epsilon,
+                max_iter,
+                record_every,
+                objective_fn,
+                reference_weights,
+                shared_plot_seed,
+            )
+        )
+
+        for result in [hb_result, nag_result]:
+            plot_history_rows.extend(
+                make_synthetic_parameter_history_rows(
+                    "rho",
+                    "rho",
+                    rho,
+                    result,
+                    instance,
+                    spectral,
+                    epsilon,
+                    reference_objective,
+                    plot_seed,
+                    plot_max_iter,
+                )
+            )
+
+    return plot_history_rows
+
+
+def find_convergent_synthetic_plot_run(
+    analysis_type,
+    parameter_value,
+    q,
+    c,
+    spectral,
+    epsilon,
+    max_iter,
+    record_every,
+    objective_fn,
+    reference_weights,
+    shared_plot_seed,
+):
+    """Find plot curves where both iterative algorithms converge.
+
+    The 100 statistical trials keep their original max_iter. This helper is
+    only for the visual convergence curves. For difficult rho values, Nesterov
+    may need more iterations to reach 1e-6, so we increase only the plot budget.
+    """
+
+    max_iter_values = [max_iter]
+    if analysis_type == "rho":
+        max_iter_values.extend(
+            [
+                max_iter * 2,
+                max_iter * 4,
+                max_iter * 8,
+            ]
+        )
+
+    last_results = None
+    search_plan = []
+    for plot_max_iter in max_iter_values:
+        search_plan.append((shared_plot_seed, plot_max_iter))
+
+    if analysis_type == "rho":
+        largest_max_iter = max_iter_values[-1]
+        for attempt in range(20):
+            search_plan.append((shared_plot_seed + 1000 + attempt, largest_max_iter))
+
+    for plot_seed, plot_max_iter in search_plan:
+        w0 = random_initial_weights(c.shape, plot_seed)
+        hb_result = heavy_ball(
+            q,
+            c,
+            w0,
+            mu=spectral.mu,
+            l_smooth=spectral.l_smooth,
+            tol=epsilon,
+            max_iter=plot_max_iter,
+            objective_fn=objective_fn,
+            reference_weights=reference_weights,
+            record_every=record_every,
+        )
+        nag_result = nesterov_accelerated_gradient(
+            q,
+            c,
+            w0,
+            mu=spectral.mu,
+            l_smooth=spectral.l_smooth,
+            tol=epsilon,
+            max_iter=plot_max_iter,
+            objective_fn=objective_fn,
+            reference_weights=reference_weights,
+            record_every=record_every,
+        )
+        last_results = (plot_seed, plot_max_iter, hb_result, nag_result)
+
+        if hb_result.converged and nag_result.converged:
+            if plot_seed != shared_plot_seed or plot_max_iter != max_iter:
+                print(
+                    "  Plot run selected for "
+                    + analysis_type
+                    + "="
+                    + format(float(parameter_value), ".1f")
+                    + ": seed="
+                    + str(plot_seed)
+                    + ", max_iter="
+                    + str(plot_max_iter)
+                )
+            return plot_seed, plot_max_iter, hb_result, nag_result
+
+    print(
+        "  Warning: no fully converged plot run found for "
+        + analysis_type
+        + "="
+        + format(float(parameter_value), ".1f")
+        + ". Using the best attempted run."
+    )
+    return last_results
 
 
 def random_initial_weights(shape, seed):
@@ -4111,6 +4305,8 @@ def make_synthetic_parameter_history_rows(
     spectral,
     epsilon,
     reference_objective,
+    plot_initialization_seed="",
+    plot_max_iter="",
 ):
     rows = []
     history = result.history
@@ -4131,6 +4327,9 @@ def make_synthetic_parameter_history_rows(
                 "epsilon": epsilon,
                 "output_weight_count": output_weight_count(instance),
                 "condition_number": spectral.condition_estimate,
+                "plot_initialization_seed": plot_initialization_seed,
+                "plot_max_iter": plot_max_iter,
+                "plot_converged": result.converged,
                 "iteration": int(iterations[index]),
                 "relative_gap": objective_gap / denominator,
                 "gradient_norm": grad_norms[index],
@@ -6348,15 +6547,19 @@ def plot_synthetic_parameter_convergence_by_value(
 
     for value in values:
         fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6))
+        value_rows = []
+        for row in rows:
+            same_value = (
+                abs(float(row["parameter_value"]) - float(value)) <= 1e-15
+            )
+            if same_value:
+                value_rows.append(row)
 
         for method in methods:
             selected = []
-            for row in rows:
+            for row in value_rows:
                 same_method = row["method"] == method
-                same_value = (
-                    abs(float(row["parameter_value"]) - float(value)) <= 1e-15
-                )
-                if same_method and same_value:
+                if same_method:
                     selected.append(row)
 
             selected.sort(key=lambda row: int(row["iteration"]))
@@ -6409,6 +6612,9 @@ def plot_synthetic_parameter_convergence_by_value(
 
         epsilon = float(rows[0]["epsilon"])
         output_weight_count_value = int(float(rows[0]["output_weight_count"]))
+        plot_seed = plot_seed_for_selected_rows(value_rows, shared_plot_seed)
+        plot_max_iter = plot_max_iter_for_selected_rows(value_rows)
+        plot_status = plot_status_for_selected_rows(value_rows)
         title = (
             "Synthetic "
             + analysis_type.capitalize()
@@ -6421,8 +6627,12 @@ def plot_synthetic_parameter_convergence_by_value(
             + format_epsilon_label(epsilon)
             + ", output weights="
             + str(output_weight_count_value)
-            + ", shared initialization seed="
-            + str(shared_plot_seed)
+            + ", initialization seed="
+            + str(plot_seed)
+            + ", plot max_iter="
+            + str(plot_max_iter)
+            + ", "
+            + plot_status
         )
         fig.suptitle(title)
         fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.86])
@@ -6434,6 +6644,46 @@ def plot_synthetic_parameter_convergence_by_value(
         )
         fig.savefig(figures_dir / filename, dpi=160)
         plt.close(fig)
+
+
+def plot_seed_for_selected_rows(rows, fallback_seed):
+    for row in rows:
+        if "plot_initialization_seed" in row:
+            value = row["plot_initialization_seed"]
+            if value != "":
+                return value
+    return fallback_seed
+
+
+def plot_max_iter_for_selected_rows(rows):
+    for row in rows:
+        if "plot_max_iter" in row:
+            value = row["plot_max_iter"]
+            if value != "":
+                return value
+    max_iteration = 0
+    for row in rows:
+        max_iteration = max(max_iteration, int(row["iteration"]))
+    return max_iteration
+
+
+def plot_status_for_selected_rows(rows):
+    method_status = {}
+    for row in rows:
+        if "plot_converged" in row:
+            method_status[row["method"]] = row["plot_converged"]
+
+    if len(method_status) == 0:
+        return "plot convergence status unavailable"
+
+    all_converged = True
+    for value in method_status.values():
+        if value is not True:
+            all_converged = False
+
+    if all_converged:
+        return "both plot runs converged"
+    return "at least one plot run did not converge"
 
 
 def plot_synthetic_parameter_time_histogram(rows, analysis_type, path):
