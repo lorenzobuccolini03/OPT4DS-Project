@@ -388,6 +388,15 @@ def heavy_ball(
         previous_weights = weights
         weights = next_weights
 
+    _record_final_history_if_needed(
+        history,
+        iterations,
+        weights,
+        final_grad_norm,
+        objective_fn,
+        reference_weights,
+    )
+
     elapsed = perf_counter() - start
 
     return OptimizationResult(
@@ -468,6 +477,15 @@ def nesterov_accelerated_gradient(
         previous_weights = weights
         weights = next_weights
 
+    _record_final_history_if_needed(
+        history,
+        iterations,
+        final_evaluation_point,
+        final_grad_norm,
+        objective_fn,
+        reference_weights,
+    )
+
     elapsed = perf_counter() - start
 
     return OptimizationResult(
@@ -544,3 +562,28 @@ def _record_history(
         numerator = frobenius_norm(weights - reference_weights)
         denominator = max(1.0, frobenius_norm(reference_weights))
         history["relative_error"].append(numerator / denominator)
+
+
+def _record_final_history_if_needed(
+    history,
+    iteration,
+    weights,
+    grad_norm,
+    objective_fn,
+    reference_weights,
+):
+    """Always save the final iterate used by the stopping test."""
+
+    if len(history["iteration"]) > 0:
+        last_iteration = int(history["iteration"][-1])
+        if last_iteration == int(iteration):
+            return
+
+    _record_history(
+        history,
+        iteration,
+        weights,
+        grad_norm,
+        objective_fn,
+        reference_weights,
+    )

@@ -656,7 +656,7 @@ def main():
         return
 
     if args.only_handwritten_dimension_scaling:
-        epsilon = 1e-3
+        epsilon = args.tol
         scaling_max_iter = choose_handwritten_scaling_max_iter(args.max_iter)
         rows, scratch_history_rows = run_handwritten_dimension_scaling(
             seed=args.seed,
@@ -6389,6 +6389,16 @@ def plot_requested_real_digits_scratch_iterative_scaling(
                 linewidth=2.0,
                 markersize=4,
             )
+            axes[0].scatter(
+                [iterations[-1]],
+                [relative_gaps[-1]],
+                color=color,
+                marker=marker,
+                s=34,
+                edgecolors="black",
+                linewidths=0.6,
+                zorder=5,
+            )
             axes[1].semilogy(
                 iterations,
                 gradient_norms,
@@ -6400,6 +6410,16 @@ def plot_requested_real_digits_scratch_iterative_scaling(
                 linewidth=2.0,
                 markersize=4,
             )
+            axes[1].scatter(
+                [iterations[-1]],
+                [gradient_norms[-1]],
+                color=color,
+                marker=marker,
+                s=34,
+                edgecolors="black",
+                linewidths=0.6,
+                zorder=5,
+            )
 
     axes[0].set_title("Relative Gap")
     axes[0].set_xlabel("Iteration")
@@ -6408,6 +6428,13 @@ def plot_requested_real_digits_scratch_iterative_scaling(
     axes[1].set_title("Gradient Norm")
     axes[1].set_xlabel("Iteration")
     axes[1].set_ylabel("||grad f(W)||_F")
+    axes[1].axhline(
+        epsilon,
+        color="black",
+        linestyle=":",
+        linewidth=1.4,
+        label="epsilon",
+    )
 
     for axis in axes:
         axis.grid(True, which="both", alpha=0.3)
