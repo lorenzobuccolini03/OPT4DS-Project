@@ -454,6 +454,28 @@ RHO_CONDITIONING_HISTORY_FIELDS = [
     "relative_error_to_reference",
 ]
 
+SPARSE_HIDDEN_SCALING_FIELDS = [
+    "algorithm",
+    "sparseness_percentage",
+    "hidden_nodes_L",
+    "computational_time_seconds",
+    "epsilon",
+    "converged",
+    "iterations",
+    "final_gradient_norm",
+    "q_dimension",
+    "n_train",
+    "n_test",
+    "n_features",
+    "n_classes",
+    "lambda_reg",
+    "estimated_L",
+    "mu",
+    "condition_number",
+    "alpha",
+    "beta",
+]
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -522,6 +544,14 @@ def parse_args():
         help=(
             "Run only the new synthetic sparsity and rho sweeps with our "
             "hand-written LDLT, Heavy Ball, and Nesterov methods."
+        ),
+    )
+    parser.add_argument(
+        "--only-synthetic-sparse-hidden-scaling",
+        action="store_true",
+        help=(
+            "Run only the synthetic sparse runtime table while hidden nodes "
+            "double from 500 to 16000."
         ),
     )
     parser.add_argument(
@@ -756,6 +786,18 @@ def main():
 
         print("Wrote " + str(aggregate_path))
         print("Wrote " + str(trial_path))
+        return
+
+    if args.only_synthetic_sparse_hidden_scaling:
+        max_iter = choose_synthetic_sparse_hidden_scaling_max_iter(args.max_iter)
+        rows = run_synthetic_sparse_hidden_scaling_times(
+            seed=args.seed,
+            epsilon=args.tol,
+            max_iter=max_iter,
+        )
+        output_path = output_dir / "synthetic_sparse_hidden_scaling_times.csv"
+        write_csv(output_path, SPARSE_HIDDEN_SCALING_FIELDS, rows)
+        print("Wrote " + str(output_path))
         return
 
     if args.only_synthetic_rho_converged_plots:
@@ -3643,6 +3685,239 @@ def synthetic_parameter_sweep_config():
         "n_features": 100,
         "n_classes": 100,
         "target_output_weights": 50000,
+    }
+
+
+def synthetic_sparse_hidden_scaling_values():
+    """Hidden-layer sizes requested for the sparse runtime experiment."""
+
+    return [500, 1000, 2000, 4000, 8000, 16000]
+
+
+def synthetic_sparse_hidden_scaling_sparsities():
+    """Sparsity levels requested for the hidden-size scaling table."""
+
+    return [0.1, 0.5, 0.9]
+
+
+def choose_synthetic_sparse_hidden_scaling_max_iter(max_iter_override):
+    """Iteration budget for HB and Nesterov in the sparse size table."""
+
+    if max_iter_override is not None:
+        return max_iter_override
+    return 10000
+
+
+def create_sparse_hidden_scaling_instance(hidden_width, sparsity, seed):
+    """Create the sparse synthetic ELM used in the hidden-size table.
+
+    This follows the same synthetic sparse construction used in the other
+    experiments: correlated features are generated first, then a random
+    feature mask introduces zeros. The hidden layer is random and fixed. The
+    optimized variable is only the output matrix.
+
+    We do not build Q here. For large hidden layers Q can be very large, so it
+    is constructed only when the LDLT timing is measured.
+    """
+
+    n_train = 1000
+    n_test = 350
+    n_features = 100
+    n_classes = 4
+    lambda_reg = 5e-3
+    activation = "relu"
+    hidden_scale = 0.9
+    correlation = 0.25
+    class_sep = 1.8
+    noise = 1.0
+    feature_scales = np.linspace(1.0, 0.3, n_features)
+
+    data = generate_correlated_classification_data(
+        n_train=n_train,
+        n_test=n_test,
+        n_features=n_features,
+        n_classes=n_classes,
+        class_sep=class_sep,
+        noise=noise,
+        correlation_strength=correlation,
+        feature_scales=feature_scales,
+        seed=seed,
+    )
+    x_train, train_labels, x_test, test_labels = data
+    train_labels, test_labels = force_label_dimension(
+        train_labels,
+        test_labels,
+        n_classes,
+    )
+
+    x_train, x_test = apply_sparse_feature_mask(
+        x_train,
+        x_test,
+        zero_probability=sparsity,
+        seed=seed + 1000,
+    )
+
+    y_train = one_hot(train_labels, n_classes)
+    y_test = one_hot(test_labels, n_classes)
+
+    rng = np.random.default_rng(seed + 10000)
+    hidden_weights = rng.normal(size=(hidden_width, n_features))
+    hidden_weights = hidden_scale * hidden_weights / np.sqrt(float(n_features))
+    hidden_bias = rng.uniform(-1.0, 1.0, size=hidden_width)
+
+    h_train = build_hidden_matrix(
+        x_train,
+        hidden_weights,
+        hidden_bias,
+        activation,
+    )
+    h_test = build_hidden_matrix(
+        x_test,
+        hidden_weights,
+        hidden_bias,
+        activation,
+    )
+    h_train_aug = augment_hidden_matrix(h_train)
+    h_test_aug = augment_hidden_matrix(h_test)
+
+    c = (y_train @ h_train_aug.T) / n_train
+
+    return ELMInstance(
+        x_train,
+        y_train,
+        train_labels,
+        x_test,
+        y_test,
+        test_labels,
+        hidden_weights,
+        hidden_bias,
+        h_train_aug,
+        h_test_aug,
+        None,
+        c,
+        lambda_reg,
+        activation,
+    )
+
+
+def estimate_spectral_bounds_from_hidden(instance):
+    """Estimate L and mu without materializing the large primal Q matrix."""
+
+    h_aug = instance.h_train_aug
+    gram = (h_aug.T @ h_aug) / instance.n_train
+    eigenvalues = np.linalg.eigvalsh(gram)
+
+    raw_l = float(np.max(eigenvalues))
+    l_smooth = (raw_l + instance.lambda_reg) * 1.01
+    mu = instance.lambda_reg
+    condition_number = l_smooth / mu
+
+    return {
+        "mu": mu,
+        "l_smooth": l_smooth,
+        "condition_number": condition_number,
+    }
+
+
+def run_synthetic_sparse_hidden_scaling_times(seed, epsilon, max_iter):
+    """Measure runtime while hidden nodes double in sparse synthetic ELMs."""
+
+    rows = []
+    hidden_values = synthetic_sparse_hidden_scaling_values()
+    sparsity_values = synthetic_sparse_hidden_scaling_sparsities()
+
+    for sparsity_index in range(len(sparsity_values)):
+        sparsity = sparsity_values[sparsity_index]
+
+        for hidden_index in range(len(hidden_values)):
+            hidden_width = hidden_values[hidden_index]
+            local_seed = seed + 6000 + 100 * sparsity_index + hidden_index
+            print(
+                "Running sparse hidden scaling: sparsity="
+                + format(sparsity, ".1f")
+                + ", hidden nodes L="
+                + str(hidden_width)
+            )
+
+            instance = create_sparse_hidden_scaling_instance(
+                hidden_width,
+                sparsity,
+                local_seed,
+            )
+            spectral = estimate_spectral_bounds_from_hidden(instance)
+
+            w0 = np.zeros_like(instance.c)
+            hb_result = heavy_ball_from_h(
+                instance,
+                w0,
+                spectral["mu"],
+                spectral["l_smooth"],
+                epsilon,
+                max_iter,
+            )
+            nag_result = nesterov_from_h(
+                instance,
+                w0,
+                spectral["mu"],
+                spectral["l_smooth"],
+                epsilon,
+                max_iter,
+            )
+
+            q, c = build_primal_elm_system(instance)
+            ldlt_result = ldlt_solve_weights(q, c)
+            q_dimension = q.shape[0]
+            del q
+            del c
+
+            results = [hb_result, nag_result, ldlt_result]
+            for result in results:
+                rows.append(
+                    make_sparse_hidden_scaling_row(
+                        result,
+                        instance,
+                        sparsity,
+                        hidden_width,
+                        q_dimension,
+                        epsilon,
+                        spectral,
+                    )
+                )
+
+    return rows
+
+
+def make_sparse_hidden_scaling_row(
+    result,
+    instance,
+    sparsity,
+    hidden_width,
+    q_dimension,
+    epsilon,
+    spectral,
+):
+    """One CSV row for the sparse hidden-size runtime table."""
+
+    return {
+        "algorithm": result.method,
+        "sparseness_percentage": sparsity,
+        "hidden_nodes_L": hidden_width,
+        "computational_time_seconds": result.elapsed_seconds,
+        "epsilon": epsilon,
+        "converged": result.converged,
+        "iterations": result.iterations,
+        "final_gradient_norm": result.final_gradient_norm,
+        "q_dimension": q_dimension,
+        "n_train": instance.n_train,
+        "n_test": instance.n_test,
+        "n_features": instance.n_features,
+        "n_classes": instance.n_classes,
+        "lambda_reg": instance.lambda_reg,
+        "estimated_L": spectral["l_smooth"],
+        "mu": spectral["mu"],
+        "condition_number": spectral["condition_number"],
+        "alpha": value_or_empty(result.alpha),
+        "beta": value_or_empty(result.beta),
     }
 
 
