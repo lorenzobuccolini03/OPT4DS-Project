@@ -1,7 +1,0 @@
-dataset,algorithm,computational_time
-wine,LDLT,0.00369895898620598
-wine,Heavy Ball,0.01019349999842234
-wine,Nesterov,0.0036252080171834677
-digits,LDLT,0.007196125021437183
-digits,Heavy Ball,0.007174500002292916
-digits,Nesterov,0.012515040987636894

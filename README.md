@@ -54,96 +54,46 @@ python3 tests/smoke_test.py
 
 ## Run Experiments
 
-Quick version:
+Run the complete set of experiments with:
 
 ```bash
-python3 run_experiments.py --suite quick
+python3 run_experiments.py
 ```
 
-Larger version:
+The complete run includes the Wine/Digits optimizer comparison, the LDLT
+validation, the Digits dimension study, the Nesterov beta comparison, the
+synthetic rho/sparsity sweeps, and the sparse dimension study. Some direct
+LDLT cases take several minutes.
+
+Each section can also be run separately:
 
 ```bash
-python3 run_experiments.py --suite full --tol 1e-6
+python3 run_experiments.py --only-real-optimizer-comparison
+python3 run_experiments.py --only-ldlt-scipy-comparison
+python3 run_experiments.py --only-digits-dimension-scaling
+python3 run_experiments.py --only-nesterov-beta-comparison
+python3 run_experiments.py --only-synthetic-sweeps
+python3 run_experiments.py --only-sparse-dimension-scaling
 ```
 
-The detailed analysis section is also executed by default. In the `full` suite,
-the synthetic epsilon/correlation/sparsity studies use the reference size
-requested for the report: 1000 training samples and about 10000 trainable
-output weights. The dimensionality-scaling studies use a stronger sweep of
-10000, 50000, and 100000 output weights. The hidden-layer weights of the ELM are
-still sampled randomly and then kept fixed; the algorithms optimize only the
-output matrix. The `quick` suite uses a smaller copy of the same experiments, so
-it is useful for checking the code without waiting too long.
+Useful options include `--max-iter`, `--record-every`, `--tol`,
+`--synthetic-sweep-tol`, `--synthetic-init-trials`, `--real-output-weights`,
+and `--real-epsilons`.
 
-You can choose the epsilon values for the detailed sweeps:
+## Results
 
-```bash
-python3 run_experiments.py --suite full --epsilons 1e-3,1e-5,1e-7
-```
+The script writes nine CSV files to `results/`:
 
-If you only want the base experiment tables, without the additional analysis
-plots, run:
+- `real_dataset_optimizer_comparison.csv`: our Heavy Ball and Nesterov methods against the corresponding PyTorch optimizers on Wine and Digits.
+- `ldlt_solver_comparison.csv`: our LDLT implementation against SciPy LDLT.
+- `digits_dimension_scaling.csv`: runtime and convergence summary as the Digits ELM grows.
+- `digits_dimension_convergence.csv`: Heavy Ball and Nesterov convergence histories for the Digits dimension study.
+- `nesterov_beta_comparison.csv`: fixed-beta and variable-beta Nesterov summary on Digits.
+- `nesterov_beta_convergence.csv`: convergence histories used in the beta plots.
+- `synthetic_sweeps_summary.csv`: aggregate results for the rho and sparsity experiments.
+- `synthetic_sweeps_runs.csv`: all 100 random-initialization runs for each synthetic setting.
+- `sparse_dimension_scaling.csv`: runtime as hidden nodes increase for three sparsity levels.
 
-```bash
-python3 run_experiments.py --suite quick --skip-detailed-analysis
-```
-
-The output is written to `results/`:
-
-- `summary.csv`: one row per method and scenario, including scratch methods and built-in benchmarks.
-- `conditioning_summary.csv`: dimensions, lambda, Power Method estimate of `lambda_max(Q)`, `L`, `mu`, and condition number for each `Q`.
-- `builtin_benchmark.csv`: NumPy reference rows, kept separate from the project algorithms.
-- `library_optimizer_benchmark.csv`: PyTorch momentum and PyTorch Nesterov reference rows.
-- `convergence_history.csv`: gradient norms, objective gaps, and relative errors for the iterative methods.
-- `detailed_analysis_summary.csv`: extra study table for dimensionality, epsilon, correlation, sparsity, real datasets, built-ins, and beta comparisons.
-- `detailed_analysis_history.csv`: convergence histories used by the detailed Nesterov fixed/variable beta plots.
-- `figures/*_convergence.png`: main convergence comparison for Heavy Ball, Nesterov, and the PyTorch reference optimizers.
-- `figures/*_nesterov_beta_comparison.png`: focused comparison between fixed-beta Nesterov and variable-beta Nesterov.
-- `figures/conditioning_overview.png`: comparison of estimated condition numbers.
-- `figures/convergence_time_all_cases.png`: bar plot of elapsed time for every method and every tested case.
-- `figures/convergence_time_*.png`: per-dataset bar plots of elapsed time.
-- `figures/analysis_dimension_scaling_times.png`: runtime comparison between LDLT, Heavy Ball, and Nesterov as the synthetic problem size grows.
-- `figures/analysis_synthetic_*_parameter_epsilon_sweep.png`: final gradient norm, objective gap, and relative error while correlation/sparsity and epsilon vary.
-- `figures/analysis_synthetic_ldlt_times.png`: LDLT runtime along the synthetic correlation and sparsity sweeps.
-- `figures/analysis_builtin_fixed_*_performance.png`: scratch methods against PyTorch and NumPy references for fixed cases.
-- `figures/analysis_builtin_fixed_*_times.png`: runtime comparison for the same fixed built-in benchmark cases.
-- `figures/analysis_wine_epsilon_sweep.png` and `figures/analysis_digits_epsilon_sweep.png`: Wine/Digits iterative metrics while epsilon varies.
-- `figures/analysis_real_ldlt_times.png`: LDLT runtime on Wine and Digits.
-- `figures/analysis_beta_fixed_variable_*.png`: fixed-beta Nesterov against variable-beta Nesterov.
-
-The script also writes a second group of files with the prefix `requested_`.
-These files follow the extra testing checklist more directly:
-
-- `requested_dimension_scaling_times.csv`: time of our LDLT, Heavy Ball, and Nesterov as output weights increase from 10000 to 50000 and 100000 in the `full` suite.
-- `requested_dimension_rho_times.csv`: time of our three algorithms for three dimensions and three values of `rho`.
-- `requested_dimension_sparsity_times.csv`: time of our three algorithms for three dimensions and three sparseness percentages.
-- `requested_library_rho_times.csv`: time comparison between our iterative methods and PyTorch references while dimension and `rho` vary.
-- `requested_library_sparsity_times.csv`: same comparison while dimension and sparseness vary.
-- `requested_ldlt_builtin_times.csv`: our LDLT against NumPy solve and SciPy LDLT.
-- `requested_real_dataset_times.csv`: time of our LDLT, Heavy Ball, and Nesterov on Wine and Digits.
-- `real_pytorch_same_initialization.csv`: Wine/Digits comparison between our Heavy Ball/Nesterov and PyTorch momentum/Nesterov, using the same random output-weight initialization for each dataset, hidden size, and epsilon combination.
-- `ldlt_scipy_comparison.csv`: comparison between our LDLT and SciPy LDLT on Wine, Digits, and a synthetic system with known optimum.
-- `figures/requested_conditioning_rho_*.png`: one two-panel convergence plot for each `rho` from `0.1` to `0.9`.
-- `figures/requested_sparsity_*.png`: one two-panel convergence plot for each sparseness value from `0.1` to `0.9`.
-- `figures/requested_rho_time_comparison.png`: runtime of our LDLT, Heavy Ball, and Nesterov as `rho` changes.
-- `figures/requested_library_*.png`: PyTorch-vs-scratch iterative comparisons.
-- `figures/requested_beta_*.png`: fixed-beta Nesterov against variable-beta Nesterov.
-- `figures/requested_real_*_scratch_iterative.png`: Wine/Digits convergence plots for our Heavy Ball and Nesterov.
-- `figures/real_pytorch_time_vs_hidden_size_epsilon_1e-03.png`: Wine/Digits runtime curves at fixed epsilon, comparing our Heavy Ball/Nesterov with PyTorch momentum/Nesterov.
-- `figures/real_pytorch_time_vs_epsilon_extreme_hidden_sizes.png`: four-panel Wine/Digits runtime curves against epsilon, separating the smallest and largest hidden layers.
-- `figures/ldlt_scipy_time_comparison.png`: runtime bar plot comparing our LDLT with SciPy LDLT on the primal Wine, Digits, and known-optimum systems.
-- `figures/ldlt_scipy_known_solution_accuracy.png`: accuracy comparison on the synthetic system where the exact optimum is known.
-
-To regenerate only the Wine/Digits PyTorch comparison with the same random
-initial output-weight matrix, three output-weight sizes, and three epsilon
-values, run:
-
-```bash
-python3 run_experiments.py --only-real-pytorch-comparison --max-iter 3000 --real-comparison-output-weights 10000,50000,100000 --real-comparison-epsilons 1e-3,1e-5,1e-7
-```
-
-To regenerate only the LDLT-vs-SciPy-LDLT comparison, run:
-
-```bash
-python3 run_experiments.py --only-ldlt-scipy-comparison --real-comparison-output-weights 10000,50000,100000
-```
+The plots are written to `results/figures/`. Their names follow the experiment,
+for example `digits_dimension_convergence.png`, `rho_0.9_convergence.png`,
+`sparsity_90_percent_convergence.png`, and `ldlt_solver_times.png`.

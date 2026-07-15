@@ -1,4 +1,4 @@
-algorithm,sparseness_percentage,hidden_nodes_L,computational_time_seconds,epsilon,converged,iterations,final_gradient_norm,q_dimension,n_train,n_test,n_features,n_classes,lambda_reg,estimated_L,mu,condition_number,alpha,beta
+algorithm,sparsity,hidden_nodes,computational_time_seconds,epsilon,converged,iterations,final_gradient_norm,q_dimension,n_train,n_test,n_features,n_classes,lambda_reg,estimated_L,mu,condition_number,alpha,beta
 Heavy Ball,0.1,500,0.2530850420007482,0.001,True,740,0.0007959097781315959,501,1000,350,100,4,0.005,143.30657802068905,0.005,28661.31560413781,0.027585342555222922,0.9766494859151316
 Nesterov,0.1,500,0.14510158299526665,0.001,True,487,0.0009993460433290406,501,1000,350,100,4,0.005,143.30657802068905,0.005,28661.31560413781,0.006978046742945958,0.9882557796011777
 LDLT,0.1,500,0.14959349999844562,0.001,True,0,4.048366996836316e-15,501,1000,350,100,4,0.005,143.30657802068905,0.005,28661.31560413781,,
